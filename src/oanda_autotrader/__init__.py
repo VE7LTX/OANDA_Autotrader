@@ -20,6 +20,8 @@ from .http import OandaHttpClient
 from .async_http import OandaAsyncHttpClient
 from .endpoints.accounts import AccountsAPI
 from .endpoints.accounts_async import AccountsAsyncAPI
+from .endpoints.instruments import InstrumentsAPI
+from .endpoints.instruments_async import InstrumentsAsyncAPI
 from .streaming import OandaStreamClient
 from .models import (
     StreamMessage,
@@ -35,6 +37,10 @@ from .app import (
     load_account_client_async,
     build_stream_client,
     load_stream_client,
+    build_instruments_client,
+    build_instruments_client_async,
+    load_instruments_client,
+    load_instruments_client_async,
 )
 from .metrics import LatencyTracker, LatencySample, LatencyStats
 from .monitor import measure_account_latency, sample_practice_live_latency
@@ -51,6 +57,8 @@ __all__ = [
     "OandaAsyncHttpClient",
     "AccountsAPI",
     "AccountsAsyncAPI",
+    "InstrumentsAPI",
+    "InstrumentsAsyncAPI",
     "OandaStreamClient",
     "StreamMessage",
     "PriceMessage",
@@ -64,6 +72,10 @@ __all__ = [
     "load_account_client_async",
     "build_stream_client",
     "load_stream_client",
+    "build_instruments_client",
+    "build_instruments_client_async",
+    "load_instruments_client",
+    "load_instruments_client_async",
     "LatencyTracker",
     "LatencySample",
     "LatencyStats",

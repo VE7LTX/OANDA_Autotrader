@@ -25,6 +25,8 @@ from .http import OandaHttpClient
 from .async_http import OandaAsyncHttpClient
 from .endpoints.accounts import AccountsAPI
 from .endpoints.accounts_async import AccountsAsyncAPI
+from .endpoints.instruments import InstrumentsAPI
+from .endpoints.instruments_async import InstrumentsAsyncAPI
 from .validation import validate_account_groups, validate_connectivity
 from .streaming import OandaStreamClient
 
@@ -59,6 +61,36 @@ def build_account_client_async(config: AppConfig) -> AccountsAsyncAPI:
     return AccountsAsyncAPI(http_client)
 
 
+def build_instruments_client(config: AppConfig) -> InstrumentsAPI:
+    """
+    Create an InstrumentsAPI client for a resolved account configuration.
+    """
+
+    http_client = OandaHttpClient(
+        base_url=config.base_url,
+        token=config.token,
+        timeout_seconds=config.settings.request_timeout_seconds,
+        requests_per_second=config.settings.requests_per_second,
+        debug_logging=config.settings.debug_logging,
+    )
+    return InstrumentsAPI(http_client)
+
+
+def build_instruments_client_async(config: AppConfig) -> InstrumentsAsyncAPI:
+    """
+    Create an async InstrumentsAPI client for a resolved account configuration.
+    """
+
+    http_client = OandaAsyncHttpClient(
+        base_url=config.base_url,
+        token=config.token,
+        timeout_seconds=config.settings.request_timeout_seconds,
+        requests_per_second=config.settings.requests_per_second,
+        debug_logging=config.settings.debug_logging,
+    )
+    return InstrumentsAsyncAPI(http_client)
+
+
 def load_account_client(
     accounts_path: str, group_name: str, account_name: str
 ) -> AccountsAPI:
@@ -91,6 +123,38 @@ def load_account_client_async(
     group, entry = select_account(groups, group_name, account_name)
     resolved = resolve_account_credentials(group, entry)
     return build_account_client_async(resolved)
+
+
+def load_instruments_client(
+    accounts_path: str, group_name: str, account_name: str
+) -> InstrumentsAPI:
+    """
+    Find an account by group name + account name and return an InstrumentsAPI client.
+    """
+
+    groups = load_account_groups(accounts_path)
+    warnings = validate_account_groups(groups)
+    if warnings:
+        raise ValueError("accounts.yaml validation warnings: " + "; ".join(warnings))
+    group, entry = select_account(groups, group_name, account_name)
+    resolved = resolve_account_credentials(group, entry)
+    return build_instruments_client(resolved)
+
+
+def load_instruments_client_async(
+    accounts_path: str, group_name: str, account_name: str
+) -> InstrumentsAsyncAPI:
+    """
+    Find an account by group name + account name and return an async InstrumentsAPI client.
+    """
+
+    groups = load_account_groups(accounts_path)
+    warnings = validate_account_groups(groups)
+    if warnings:
+        raise ValueError("accounts.yaml validation warnings: " + "; ".join(warnings))
+    group, entry = select_account(groups, group_name, account_name)
+    resolved = resolve_account_credentials(group, entry)
+    return build_instruments_client_async(resolved)
 
 
 def validate_account_connection(

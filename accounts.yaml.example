@@ -1,0 +1,35 @@
+# accounts.yaml
+# OANDA v20 account registry
+#
+# Structure:
+# - accounts: top-level mapping of groups (demo/live or any label you want)
+# - each group defines environment, currency, and a list of accounts
+#
+# Notes:
+# - environment accepts FXPRACTICE/FXTRADE (case-insensitive)
+# - account names must be unique within a group
+
+accounts:
+  demo:
+    environment: FXPRACTICE
+    currency: CAD
+    accounts:
+      - name: Primary
+        type: primary
+        account_id: "101-002-0000000-000"
+
+  live:
+    environment: FXTRADE
+    currency: CAD
+    accounts:
+      - name: MT4 - Bear
+        type: mt4
+        account_id: "001-002-0000000-003"
+
+      - name: MT4 - Bull
+        type: mt4
+        account_id: "001-002-0000000-002"
+
+      - name: Primary
+        type: primary
+        account_id: "001-002-0000000-001"

@@ -137,12 +137,59 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+.env.*
 .venv
 env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Sensitive configs / credentials
+*.env
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+*.csr
+*.jks
+*.keystore
+*.kdbx
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+*.log
+*.pid
+*.seed
+*.token
+*.tokens
+*.secret
+*.secrets
+*.credentials
+*.creds
+*.apikey
+*.api_key
+*.api_keys
+*.auth
+*.session
+*.private
+
+# YAML secrets (including your accounts file)
+accounts.yaml
+accounts.yml
+*secrets*.yaml
+*secrets*.yml
+*secret*.yaml
+*secret*.yml
+*credentials*.yaml
+*credentials*.yml
+
+# Allow committed samples
+!.env.example
+!accounts.yaml.example
 
 # Spyder project settings
 .spyderproject

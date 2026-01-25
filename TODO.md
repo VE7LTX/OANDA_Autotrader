@@ -1,7 +1,6 @@
 # TODO
 
 ## P0 Reliability
-- Add structured logging and metrics export (CSV/Prometheus).
 - Add async monitoring loop with rolling latency stats.
 - Add per-stream reconnect metrics (count, last error, last success).
 

@@ -41,6 +41,7 @@ class OandaStreamClient:
     max_retries: int | None = None
     backoff_base_seconds: float = 0.5
     backoff_max_seconds: float = 15.0
+    on_event: Callable[[dict[str, Any]], None] | None = None
     _session: aiohttp.ClientSession | None = None
 
     async def __aenter__(self) -> "OandaStreamClient":
@@ -89,15 +90,19 @@ class OandaStreamClient:
                 # A clean stream end should not auto-reconnect unless enabled.
                 if not self.reconnect:
                     break
-            except (aiohttp.ClientError, asyncio.TimeoutError):
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if not self.reconnect:
                     raise
+                if self.on_event:
+                    self.on_event({"event": "stream_error", "error": str(exc)})
             attempt += 1
             if self.max_retries is not None and attempt > self.max_retries:
                 break
             # Exponential backoff with jitter.
             delay = min(self.backoff_base_seconds * (2 ** (attempt - 1)), self.backoff_max_seconds)
             delay += random.uniform(0, 0.25 * delay)
+            if self.on_event:
+                self.on_event({"event": "stream_reconnect_wait", "delay_seconds": delay})
             await asyncio.sleep(delay)
 
     async def stream_pricing(

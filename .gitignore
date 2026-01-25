@@ -187,6 +187,9 @@ accounts.yml
 *credentials*.yaml
 *credentials*.yml
 
+# Data exports
+data/
+
 # Allow committed samples
 !.env.example
 !accounts.yaml.example

@@ -15,6 +15,8 @@ Logic flow:
 
 from __future__ import annotations
 
+from typing import Callable
+
 from .config import (
     AppConfig,
     load_account_groups,
@@ -176,7 +178,11 @@ def validate_account_connection(
     return validate_connectivity(http_client)
 
 
-def build_stream_client(config: AppConfig) -> OandaStreamClient:
+def build_stream_client(
+    config: AppConfig,
+    *,
+    on_event: Callable[[dict[str, object]], None] | None = None,
+) -> OandaStreamClient:
     """
     Create a streaming client with reconnect/backoff settings.
     """
@@ -189,6 +195,7 @@ def build_stream_client(config: AppConfig) -> OandaStreamClient:
         max_retries=config.settings.max_retries,
         backoff_base_seconds=config.settings.backoff_base_seconds,
         backoff_max_seconds=config.settings.backoff_max_seconds,
+        on_event=on_event,
     )
 
 

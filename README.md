@@ -30,7 +30,9 @@ Note: The real config files are gitignored to prevent accidental leaks.
 - `src/oanda_autotrader/streaming.py`: HTTP streaming client with reconnect/backoff.
 - `src/oanda_autotrader/models.py`: typed stream message wrappers.
 - `src/oanda_autotrader/monitor.py`: latency sampling helpers.
+- `src/oanda_autotrader/logging_config.py`: structured logging setup.
 - `scripts/run_checks.py`: health check report with counts and timings.
+- `scripts/capture_usd_cad_candles.py`: JSONL candle export for model training.
 
 ## Endpoints Covered
 Accounts:
@@ -106,6 +108,11 @@ Report columns:
 - `instrument_types`: counts by type (CURRENCY/CFD/METAL).
 More details: `CHECKS.md`.
 
+## Data Capture (USD_CAD)
+```bash
+python scripts/capture_usd_cad_candles.py
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py
@@ -116,6 +123,7 @@ Defaults and tuning are in `CONFIG.md`. Key points:
 - Rate limiting: `OANDA_REQUESTS_PER_SECOND` (default 100).
 - Debug logging: `OANDA_DEBUG_LOGGING` (default false).
 - Stream reconnect/backoff: `OANDA_STREAM_*` (defaults in `.env.example`).
+ - Structured logs: `setup_logging(json_output=True)` for JSONL output.
 
 ## Reference Docs
 - `BEST_PRACTICES.md`: OANDA best practices + sync pattern.

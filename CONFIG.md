@@ -35,3 +35,6 @@
 - Keep `OANDA_REQUESTS_PER_SECOND` at 100 to match OANDA guidance.
 - Use `OANDA_STREAM_RECONNECT=true` for production feeds.
 - Set `OANDA_DEBUG_LOGGING=true` only when diagnosing issues.
+
+## Logging
+- Use `setup_logging(json_output=True)` for JSONL logs.

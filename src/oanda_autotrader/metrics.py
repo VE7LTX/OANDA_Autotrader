@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterable
+import csv
+import json
 import statistics
 import time
 
@@ -67,3 +69,37 @@ class LatencyTracker:
 
     def all_names(self) -> Iterable[str]:
         return sorted({s.name for s in self._samples})
+
+    def samples(self) -> list[LatencySample]:
+        return list(self._samples)
+
+
+def export_latency_csv(samples: list[LatencySample], path: str) -> None:
+    """
+    Write latency samples to CSV.
+    """
+
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["name", "milliseconds", "timestamp"])
+        for sample in samples:
+            writer.writerow([sample.name, sample.milliseconds, sample.timestamp])
+
+
+def export_latency_jsonl(samples: list[LatencySample], path: str) -> None:
+    """
+    Write latency samples to JSONL.
+    """
+
+    with open(path, "w", encoding="utf-8") as handle:
+        for sample in samples:
+            handle.write(
+                json.dumps(
+                    {
+                        "name": sample.name,
+                        "milliseconds": sample.milliseconds,
+                        "timestamp": sample.timestamp,
+                    }
+                )
+                + "\n"
+            )

@@ -43,7 +43,12 @@ from .app import (
     load_instruments_client_async,
 )
 from .metrics import LatencyTracker, LatencySample, LatencyStats
-from .monitor import measure_account_latency, sample_practice_live_latency
+from .monitor import (
+    measure_account_latency,
+    sample_practice_live_latency,
+    monitor_latency_loop,
+)
+from .logging_config import setup_logging
 
 __all__ = [
     "AccountEntry",
@@ -81,4 +86,6 @@ __all__ = [
     "LatencyStats",
     "measure_account_latency",
     "sample_practice_live_latency",
+    "monitor_latency_loop",
+    "setup_logging",
 ]

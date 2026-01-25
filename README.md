@@ -113,6 +113,11 @@ More details: `CHECKS.md`.
 python scripts/capture_usd_cad_candles.py
 ```
 
+## Continuous Capture (USD_CAD)
+```bash
+python scripts/capture_usd_cad_stream.py
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

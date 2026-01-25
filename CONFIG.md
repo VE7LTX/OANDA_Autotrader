@@ -38,3 +38,14 @@
 
 ## Logging
 - Use `setup_logging(json_output=True)` for JSONL logs.
+
+## Data Capture (USD_CAD)
+- `OANDA_CAPTURE_GROUP` (default: live)
+- `OANDA_CAPTURE_ACCOUNT` (default: Primary)
+- `OANDA_CAPTURE_INSTRUMENT` (default: USD_CAD)
+- `OANDA_CAPTURE_DIR` (default: data)
+- `OANDA_CAPTURE_ROTATE_MINUTES` (default: 60)
+- `OANDA_CAPTURE_CANDLE_INTERVAL_SECONDS` (default: 300)
+- `OANDA_CAPTURE_GRANULARITY` (default: S5)
+- `OANDA_CAPTURE_PRICE` (default: M)
+- `OANDA_CAPTURE_COUNT` (default: 500)

@@ -43,6 +43,9 @@ Streaming:
 - `GET /v3/accounts/{accountID}/pricing/stream`
 - `GET /v3/accounts/{accountID}/transactions/stream`
 
+Instruments:
+- `GET /v3/instruments/{instrument}/candles`
+
 ## Example Usage (Sync)
 ```python
 from oanda_autotrader.app import load_account_client
@@ -102,6 +105,11 @@ Report columns:
 - `ms_*`: per-endpoint latency (milliseconds).
 - `instrument_types`: counts by type (CURRENCY/CFD/METAL).
 More details: `CHECKS.md`.
+
+## Instrument Check
+```bash
+python scripts/run_instrument_checks.py
+```
 
 ## Performance & Reliability
 Defaults and tuning are in `CONFIG.md`. Key points:

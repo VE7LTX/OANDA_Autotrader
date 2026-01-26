@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import atexit
 import threading
 import time
 import traceback
@@ -455,10 +456,12 @@ def main() -> None:
     pygame.init()
     screen = pygame.display.set_mode((1100, 680))
     pygame.display.set_caption("OANDA Dashboard")
+    _log_dashboard_event("dashboard_display_ready")
     font = pygame.font.SysFont("Consolas", 20)
 
     clock = pygame.time.Clock()
     running = True
+    last_tick_log = time.time()
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -745,6 +748,9 @@ def main() -> None:
 
         pygame.display.flip()
         clock.tick(30)
+        if time.time() - last_tick_log >= 5:
+            _log_dashboard_event("dashboard_tick")
+            last_tick_log = time.time()
 
     _log_dashboard_event("dashboard_exit")
     pygame.quit()
@@ -752,7 +758,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        _log_dashboard_event("dashboard_start")
+        _log_dashboard_event(f"dashboard_start pid={os.getpid()}")
+        atexit.register(lambda: _log_dashboard_event("dashboard_atexit"))
         main()
     except BaseException:
         _log_dashboard_event("dashboard_error")

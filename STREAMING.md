@@ -3,6 +3,11 @@
 OANDA streaming is HTTP chunked streaming, not WebSocket. The client keeps a
 long-lived GET request open and receives newline-delimited JSON messages.
 
+## Client Summary
+- Client: `src/oanda_autotrader/streaming.py` (`OandaStreamClient`)
+- Transport: `aiohttp` with an async generator interface
+- Output: typed `StreamMessage` wrappers in `src/oanda_autotrader/models.py`
+
 ## Stream Endpoints
 - Pricing: `/v3/accounts/{accountID}/pricing/stream`
 - Transactions: `/v3/accounts/{accountID}/transactions/stream`
@@ -11,6 +16,7 @@ long-lived GET request open and receives newline-delimited JSON messages.
 - Exponential backoff with jitter (default base 0.5s, max 15s).
 - `max_retries=None` means reconnect forever.
 - `reconnect=False` disables auto-reconnect and surfaces errors.
+- `on_event` hooks receive reconnect delays and error events for metrics.
 
 ## Env Settings
 - `OANDA_STREAM_RECONNECT` (true/false)
@@ -33,6 +39,7 @@ long-lived GET request open and receives newline-delimited JSON messages.
 ## Metrics
 - `StreamMetrics` aggregates messages/sec, errors, reconnect waits.
 - Hook it into streaming via `build_stream_client(config, on_event=metrics.on_event)`.
+- `StreamMetricsSnapshot` provides a single record for dashboards/logging.
 
 ## Next Ideas
 - Add structured logging on reconnects and stream errors.

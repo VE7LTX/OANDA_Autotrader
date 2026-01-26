@@ -182,23 +182,27 @@ def autoencoder_status_loop(state: SharedState, interval: int, path: str) -> Non
         time.sleep(interval)
 
 
+def load_latest_prediction(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().strip().splitlines()
+            for line in reversed(lines):
+                if not line:
+                    continue
+                candidate = json.loads(line)
+                if "horizon_secs" not in candidate or "horizon" not in candidate:
+                    continue
+                return candidate
+    except Exception:
+        return None
+    return None
+
+
 def predictions_loop(state: SharedState, interval: int, path: str) -> None:
     while True:
-        preds = None
-        try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as handle:
-                    lines = handle.read().strip().splitlines()
-                    for line in reversed(lines):
-                        if not line:
-                            continue
-                        candidate = json.loads(line)
-                        if "horizon_secs" not in candidate or "horizon" not in candidate:
-                            continue
-                        preds = candidate
-                        break
-        except Exception:
-            preds = None
+        preds = load_latest_prediction(path)
         state.update_predictions(preds)
         time.sleep(interval)
 

@@ -7,6 +7,8 @@ This repo is a segmented scaffold for OANDA v20 REST + streaming usage with:
 - account endpoints (list/details/summary/instruments)
 - streaming client with reconnect/backoff
 - latency monitoring and health checks
+- feature engineering + autoencoder training loop
+- real-time dashboard with prediction band + scoring
 
 ## Quick Start
 1) Copy sample config files and rename them:
@@ -33,6 +35,8 @@ Note: The real config files are gitignored to prevent accidental leaks.
 - `src/oanda_autotrader/logging_config.py`: structured logging setup.
 - `scripts/run_checks.py`: health check report with counts and timings.
 - `scripts/capture_usd_cad_candles.py`: JSONL candle export for model training.
+- `scripts/score_predictions.py`: scores forecast bands vs realized candles.
+- `scripts/train_autoencoder_loop.py`: continuous AE training + 60s forecast band output.
 
 ## Endpoints Covered
 Accounts:
@@ -134,11 +138,18 @@ python scripts/dashboard_pygame.py
 ```
 
 Dashboard panels:
-- Latency (practice/live) with auto-scale grid and axes.
+- Live latency (practice/live) text + stream health.
 - Stream metrics (msgs/sec, errors, reconnects, uptime).
 - Account summary (P&L, balance).
 - Instrument chart (candlesticks built from tick stream).
 - Autoencoder status + reconstruction band + anomaly highlight.
+- 60s forecast band (mu +/- 2 sigma) + hit/miss markers as candles resolve.
+
+Dashboard data sources:
+- `data/predictions_latest.jsonl` (single-line latest forecast record).
+- `data/prediction_scores.jsonl` (rolling scoring output).
+
+Note: The forecast band is a short-horizon statistical envelope, not a guarantee.
 
 ## Autoencoder Status Feed (Dummy)
 ```bash
@@ -157,8 +168,12 @@ python scripts/train_autoencoder_loop.py --features data/usd_cad_features.jsonl 
 
 ## Prediction Scoring
 ```bash
-python scripts/score_predictions.py
+python scripts/score_predictions.py --watch --every 10
 ```
+
+Scoring notes:
+- Scores remain null until candles exist after the prediction timestamp.
+- Bucket metrics are step ranges: 1-3, 4-8, 9-12.
 
 ## Instrument Check
 ```bash
@@ -172,9 +187,39 @@ Defaults and tuning are in `CONFIG.md`. Key points:
 - Stream reconnect/backoff: `OANDA_STREAM_*` (defaults in `.env.example`).
  - Structured logs: `setup_logging(json_output=True)` for JSONL output.
 
+## Testing
+Install dev dependencies:
+```bash
+pip install -r requirements-dev.txt
+```
+
+Run unit tests (no network):
+```bash
+pytest
+```
+
+Run live tests (requires real credentials):
+```bash
+set RUN_LIVE_TESTS=1
+pytest -m live
+```
+
+## Quickstart (End-to-End Flow)
+```bash
+python scripts/run_checks.py
+python scripts/run_instrument_checks.py
+python scripts/train_autoencoder_loop.py --once --epochs 1 --horizon 12 --interval-secs 5
+python scripts/score_predictions.py --watch --every 10
+python scripts/dashboard_pygame.py
+```
+
+Note: scoring will remain null until at least 60s of new candles exist after the
+prediction timestamp.
+
 ## Reference Docs
 - `BEST_PRACTICES.md`: OANDA best practices + sync pattern.
 - `STREAMING.md`: stream behavior, reconnect strategy.
 - `CONFIG.md`: env config reference.
 - `CHECKS.md`: health check output and usage notes.
 - `TODO.md`: roadmap and next improvements.
+- `TESTING.md`: test philosophy and coverage.

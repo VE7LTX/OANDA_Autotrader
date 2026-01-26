@@ -65,11 +65,16 @@
 ## Autoencoder Training
 - `scripts/train_autoencoder.py` trains a small PyTorch AE on feature rows.
 - Outputs status updates to `data/ae_status.jsonl` per epoch.
-- `scripts/train_autoencoder_loop.py` retrains on a schedule and writes predictions to `data/predictions.jsonl`.
+- `scripts/train_autoencoder_loop.py` retrains on a schedule and writes a single
+  latest prediction record to `data/predictions_latest.jsonl` (overwritten each run).
+- Optional archive: pass `--archive-predictions` to write
+  `data/predictions/predictions_YYYYMMDD_HHMM.jsonl`.
 - `scripts/train_autoencoder_loop.py` also writes reconstruction stats to `data/recon.jsonl`.
 
 ## Prediction Scoring
 - `scripts/score_predictions.py` writes labeled outcomes to `data/prediction_scores.jsonl`.
+- Use `--watch --every 10` to keep scores updated as new candles arrive.
+- Scores remain null until candles exist after the prediction timestamp.
 
 ## Dashboard
 - `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)
@@ -82,7 +87,7 @@
 - `OANDA_DASHBOARD_CANDLE_POINTS` (default: 120)
 - `OANDA_DASHBOARD_AE_STATUS_PATH` (default: data/ae_status.jsonl)
 - `OANDA_DASHBOARD_AE_STATUS_INTERVAL` (default: 5)
-- `OANDA_DASHBOARD_PRED_PATH` (default: data/predictions.jsonl)
+- `OANDA_DASHBOARD_PRED_PATH` (default: data/predictions_latest.jsonl)
 - `OANDA_DASHBOARD_PRED_INTERVAL` (default: 5)
 - `OANDA_DASHBOARD_RECON_PATH` (default: data/recon.jsonl)
 - `OANDA_DASHBOARD_RECON_INTERVAL` (default: 5)

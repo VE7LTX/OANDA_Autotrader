@@ -49,3 +49,7 @@
 - `OANDA_CAPTURE_GRANULARITY` (default: S5)
 - `OANDA_CAPTURE_PRICE` (default: M)
 - `OANDA_CAPTURE_COUNT` (default: 500)
+
+## Dataset Builder
+- `scripts/build_dataset.py` reads `data/usd_cad_candles_*.jsonl`.
+- Outputs windows of normalized close prices for autoencoder training.

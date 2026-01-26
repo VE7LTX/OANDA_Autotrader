@@ -118,6 +118,11 @@ python scripts/capture_usd_cad_candles.py
 python scripts/capture_usd_cad_stream.py
 ```
 
+## Dataset Builder
+```bash
+python scripts/build_dataset.py --input-dir data --window 64 --stride 8 --format jsonl
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

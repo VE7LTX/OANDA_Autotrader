@@ -440,6 +440,7 @@ def main() -> None:
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                _log_dashboard_event("dashboard_quit_event")
                 running = False
 
         screen.fill((10, 12, 16))
@@ -691,6 +692,7 @@ def main() -> None:
         pygame.display.flip()
         clock.tick(30)
 
+    _log_dashboard_event("dashboard_exit")
     pygame.quit()
 
 

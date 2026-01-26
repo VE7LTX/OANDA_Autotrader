@@ -86,6 +86,36 @@ def draw_graph(screen, values, color, rect):
     pygame.draw.lines(screen, color, False, points, 2)
 
 
+def draw_grid(screen, rect, rows=5, cols=5, color=(40, 46, 60)):
+    for i in range(1, rows):
+        y = rect.top + int(i * rect.height / rows)
+        pygame.draw.line(screen, color, (rect.left, y), (rect.right, y), 1)
+    for i in range(1, cols):
+        x = rect.left + int(i * rect.width / cols)
+        pygame.draw.line(screen, color, (x, rect.top), (x, rect.bottom), 1)
+
+
+def draw_axis_labels(
+    screen, rect, values, font, *, span_seconds: int, color=(180, 180, 180)
+):
+    if not values:
+        return
+    max_val = max(values)
+    min_val = min(values)
+    span = max(max_val - min_val, 1.0)
+    top_label = font.render(f"{max_val:.1f} ms", True, color)
+    mid_label = font.render(f"{(min_val + span / 2):.1f} ms", True, color)
+    bot_label = font.render(f"{min_val:.1f} ms", True, color)
+    screen.blit(top_label, (rect.left + 5, rect.top + 5))
+    screen.blit(mid_label, (rect.left + 5, rect.centery - 10))
+    screen.blit(bot_label, (rect.left + 5, rect.bottom - 25))
+
+    left_label = font.render("0s", True, color)
+    right_label = font.render(f"{span_seconds}s", True, color)
+    screen.blit(left_label, (rect.left + 5, rect.bottom + 5))
+    screen.blit(right_label, (rect.right - right_label.get_width() - 5, rect.bottom + 5))
+
+
 def main() -> None:
     interval = _env_int("OANDA_DASHBOARD_LATENCY_INTERVAL", 5)
     max_points = _env_int("OANDA_DASHBOARD_HISTORY", 120)
@@ -154,8 +184,12 @@ def main() -> None:
 
         graph_rect = pygame.Rect(20, 200, 960, 150)
         pygame.draw.rect(screen, (30, 36, 48), graph_rect)
+        draw_grid(screen, graph_rect)
         draw_graph(screen, practice_hist, (80, 200, 120), graph_rect)
         draw_graph(screen, live_hist, (80, 140, 220), graph_rect)
+        combined = practice_hist + live_hist
+        span_seconds = int(max_points * interval)
+        draw_axis_labels(screen, graph_rect, combined, font, span_seconds=span_seconds)
 
         legend1 = font.render("Practice latency", True, (80, 200, 120))
         legend2 = font.render("Live latency", True, (80, 140, 220))

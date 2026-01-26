@@ -50,6 +50,10 @@ class SharedState:
         self.autoencoder_status: dict | None = None
         self.predictions: dict | None = None
         self.recon: dict | None = None
+        self.recon_history: list[float] = []
+        self.recon_std_error: float | None = None
+        self.recon_k: float = 1.5
+        self.pred_scores: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
         self.candle_interval = 5
         self.max_candles = 120
@@ -96,6 +100,17 @@ class SharedState:
     def update_recon(self, recon: dict | None) -> None:
         with self.lock:
             self.recon = recon
+            if recon and "recon" in recon:
+                self.recon_history.append(float(recon["recon"]))
+                self.recon_history = self.recon_history[-self.max_candles :]
+                if "std_error" in recon:
+                    self.recon_std_error = float(recon["std_error"])
+                if "k" in recon:
+                    self.recon_k = float(recon["k"])
+
+    def update_scores(self, scores: dict | None) -> None:
+        with self.lock:
+            self.pred_scores = scores
 
     def update_tick(self, price: float, ts: float) -> None:
         with self.lock:
@@ -196,6 +211,21 @@ def recon_loop(state: SharedState, interval: int, path: str) -> None:
         state.update_recon(recon)
         time.sleep(interval)
 
+
+def scores_loop(state: SharedState, interval: int, path: str) -> None:
+    while True:
+        scores = None
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.read().strip().splitlines()
+                    if lines:
+                        scores = json.loads(lines[-1])
+        except Exception:
+            scores = None
+        state.update_scores(scores)
+        time.sleep(interval)
+
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
@@ -244,8 +274,33 @@ def draw_candles(screen, candles, rect, *, min_val: float, max_val: float):
         color = (80, 200, 120) if c["c"] >= c["o"] else (220, 80, 80)
         pygame.draw.line(screen, color, (x + candle_width // 2, y_high), (x + candle_width // 2, y_low), 1)
         body_top = min(y_open, y_close)
-        body_h = max(abs(y_close - y_open), 2)
+        body_h = abs(y_close - y_open)
+        min_body_px = 4
+        if body_h < min_body_px:
+            mid = int((y_open + y_close) / 2)
+            body_top = mid - (min_body_px // 2)
+            body_h = min_body_px
         pygame.draw.rect(screen, color, pygame.Rect(x, body_top, candle_width, body_h))
+
+
+def draw_dashed_line(screen, points, color, dash_length=6):
+    if len(points) < 2:
+        return
+    for i in range(len(points) - 1):
+        x1, y1 = points[i]
+        x2, y2 = points[i + 1]
+        dx = x2 - x1
+        dy = y2 - y1
+        dist = max((dx * dx + dy * dy) ** 0.5, 1.0)
+        steps = int(dist // dash_length)
+        for s in range(0, steps, 2):
+            t1 = s / steps
+            t2 = min((s + 1) / steps, 1.0)
+            sx = x1 + dx * t1
+            sy = y1 + dy * t1
+            ex = x1 + dx * t2
+            ey = y1 + dy * t2
+            pygame.draw.line(screen, color, (sx, sy), (ex, ey), 1)
 
 
 def draw_grid(screen, rect, rows=5, cols=5, color=(40, 46, 60)):
@@ -266,6 +321,8 @@ def draw_axis_labels(
     span_seconds: int,
     unit: str | None = None,
     precision: int = 1,
+    align_right: bool = False,
+    show_time: bool = True,
     color=(180, 180, 180),
 ):
     if not values:
@@ -279,14 +336,20 @@ def draw_axis_labels(
     mid_label = font.render(f"{fmt.format(min_val + span / 2)}{suffix}", True, color)
     bot_label = font.render(f"{fmt.format(min_val)}{suffix}", True, color)
     inset = 6
-    screen.blit(top_label, (rect.left + inset, rect.top + inset))
-    screen.blit(mid_label, (rect.left + inset, rect.centery - 10))
-    screen.blit(bot_label, (rect.left + inset, rect.bottom - 25))
+    if align_right:
+        screen.blit(top_label, (rect.right - top_label.get_width() - inset, rect.top + inset))
+        screen.blit(mid_label, (rect.right - mid_label.get_width() - inset, rect.centery - 10))
+        screen.blit(bot_label, (rect.right - bot_label.get_width() - inset, rect.bottom - 25))
+    else:
+        screen.blit(top_label, (rect.left + inset, rect.top + inset))
+        screen.blit(mid_label, (rect.left + inset, rect.centery - 10))
+        screen.blit(bot_label, (rect.left + inset, rect.bottom - 25))
 
-    left_label = font.render("0s", True, color)
-    right_label = font.render(f"{span_seconds}s", True, color)
-    screen.blit(left_label, (rect.left + inset, rect.bottom - 20))
-    screen.blit(right_label, (rect.right - right_label.get_width() - inset, rect.bottom - 20))
+    if show_time:
+        left_label = font.render("0s", True, color)
+        right_label = font.render(f"{span_seconds}s", True, color)
+        screen.blit(left_label, (rect.left + inset, rect.bottom - 20))
+        screen.blit(right_label, (rect.right - right_label.get_width() - inset, rect.bottom - 20))
 
 
 def main() -> None:
@@ -304,6 +367,8 @@ def main() -> None:
     preds_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL", 5)
     recon_path = _env("OANDA_DASHBOARD_RECON_PATH", "data/recon.jsonl")
     recon_interval = _env_int("OANDA_DASHBOARD_RECON_INTERVAL", 5)
+    scores_path = _env("OANDA_DASHBOARD_SCORE_PATH", "data/prediction_scores.jsonl")
+    scores_interval = _env_int("OANDA_DASHBOARD_SCORE_INTERVAL", 5)
 
     state = SharedState()
     start_ts = time.time()
@@ -331,6 +396,11 @@ def main() -> None:
     threading.Thread(
         target=recon_loop,
         args=(state, recon_interval, recon_path),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=scores_loop,
+        args=(state, scores_interval, scores_path),
         daemon=True,
     ).start()
 
@@ -367,6 +437,7 @@ def main() -> None:
             ae_status = state.autoencoder_status
             preds = state.predictions
             recon = state.recon
+            scores = state.pred_scores
 
         padding = 20
         line_h = 26
@@ -398,8 +469,15 @@ def main() -> None:
         )
         pl_text = f"{state.live_pl:.2f}" if state.live_pl is not None else "--"
         bal_text = f"{state.live_balance:.2f}" if state.live_balance is not None else "--"
+        coverage = "--"
+        mae = "--"
+        if scores:
+            if scores.get("coverage") is not None:
+                coverage = f"{scores['coverage'] * 100:.1f}%"
+            if scores.get("mae") is not None:
+                mae = f"{scores['mae']:.6f}"
         line3 = font.render(
-            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  uptime: {uptime_label}",
+            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             True,
             (200, 200, 200),
         )
@@ -413,51 +491,41 @@ def main() -> None:
         screen.blit(line4, (padding, padding + line_h * 4))
 
         charts_top = padding + line_h * 5 + 10
-        chart_h = 160
-        graph_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h)
-        pygame.draw.rect(screen, (30, 36, 48), graph_rect)
-        draw_grid(screen, graph_rect)
-        draw_graph(screen, practice_hist, (80, 200, 120), graph_rect)
-        draw_graph(screen, live_hist, (80, 140, 220), graph_rect)
-        combined = practice_hist + live_hist
-        span_seconds = int(max_points * interval)
-        draw_axis_labels(
-            screen,
-            graph_rect,
-            combined,
-            font,
-            span_seconds=span_seconds,
-            unit="ms",
-            precision=1,
-        )
-
-        legend1 = font.render("Practice latency", True, (80, 200, 120))
-        legend2 = font.render("Live latency", True, (80, 140, 220))
-        screen.blit(legend1, (padding, graph_rect.bottom + 6))
-        screen.blit(legend2, (padding + 220, graph_rect.bottom + 6))
-
-        price_rect = pygame.Rect(padding, graph_rect.bottom + 40, 1060 - padding * 2, chart_h)
+        chart_h = 180
+        price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
         draw_grid(screen, price_rect)
-        all_vals = []
+        price_vals = []
         for c in candles:
-            all_vals.extend([c["l"], c["h"]])
+            price_vals.extend([c["l"], c["h"]])
         pred_points = []
         if preds and "horizon" in preds:
-            for item in preds["horizon"]:
-                pred_points.append(item["mean"])
-                all_vals.extend([item["low"], item["high"]])
-        if all_vals:
-            min_val = min(all_vals)
-            max_val = max(all_vals)
+            pred_ts = preds.get("ts")
+            if pred_ts:
+                try:
+                    pred_epoch = datetime.fromisoformat(pred_ts.replace("Z", "+00:00"))
+                    age = time.time() - pred_epoch.timestamp()
+                except ValueError:
+                    age = 0
+            else:
+                age = 0
+            if age <= 120:
+                for item in preds["horizon"]:
+                    pred_points.append(item["mean"])
+        if price_vals:
+            price_min = min(price_vals)
+            price_max = max(price_vals)
+            pad = max((price_max - price_min) * 0.10, price_max * 0.001)
+            price_min -= pad
+            price_max += pad
         else:
-            min_val = 0.0
-            max_val = 1.0
-        draw_candles(screen, candles, price_rect, min_val=min_val, max_val=max_val)
+            price_min = 0.0
+            price_max = 1.0
+        draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max)
         draw_axis_labels(
             screen,
             price_rect,
-            all_vals,
+            price_vals,
             font,
             span_seconds=int(instrument_points * instrument_interval),
             unit=None,
@@ -472,15 +540,15 @@ def main() -> None:
             step_px = max(8, int(price_rect.width / max(len(pred_points) + 2, 1)))
             start_x = price_rect.right - (len(pred_points) * step_px) - 10
             # Map to screen coords using full scale.
-            span = max(max_val - min_val, max_val * 0.002, 1e-6)
+            span = max(price_max - price_min, price_max * 0.002, 1e-6)
             points_low = []
             points_high = []
             points_mean = []
             for i, (low, high, mean) in enumerate(zip(lows, highs, mean_vals)):
                 x = start_x + i * step_px
-                y_low = price_rect.bottom - int(((low - min_val) / span) * price_rect.height)
-                y_high = price_rect.bottom - int(((high - min_val) / span) * price_rect.height)
-                y_mean = price_rect.bottom - int(((mean - min_val) / span) * price_rect.height)
+                y_low = price_rect.bottom - int(((low - price_min) / span) * price_rect.height)
+                y_high = price_rect.bottom - int(((high - price_min) / span) * price_rect.height)
+                y_mean = price_rect.bottom - int(((mean - price_min) / span) * price_rect.height)
                 points_low.append((x, y_low))
                 points_high.append((x, y_high))
                 points_mean.append((x, y_mean))
@@ -495,17 +563,47 @@ def main() -> None:
             if points_mean:
                 pygame.draw.lines(screen, (120, 180, 255), False, points_mean, 2)
 
-        # AE reconstruction band (current window)
-        if recon and "recon" in recon:
-            recon_price = recon["recon"]
-            mean_err = recon.get("mean_error", 0.0)
-            std_err = recon.get("std_error", 0.0)
-            k = recon.get("k", 1.5)
-            band = k * std_err
-            if band > 0:
-                y_recon = price_rect.bottom - int(((recon_price - min_val) / span) * price_rect.height)
-                y_low = price_rect.bottom - int(((recon_price - band - min_val) / span) * price_rect.height)
-                y_high = price_rect.bottom - int(((recon_price + band - min_val) / span) * price_rect.height)
+        # AE reconstruction band + line on right axis (separate scale)
+        ae_vals = list(state.recon_history)
+        if recon and ae_vals:
+            ae_min = min(ae_vals)
+            ae_max = max(ae_vals)
+            ae_std = state.recon_std_error or 0.0
+            k = state.recon_k
+            ae_min -= k * ae_std
+            ae_max += k * ae_std
+            ae_pad = max((ae_max - ae_min) * 0.10, abs(ae_max) * 0.01, 1e-6)
+            ae_min -= ae_pad
+            ae_max += ae_pad
+            ae_span = max(ae_max - ae_min, 1e-6)
+
+            # AE axis labels on right
+            draw_axis_labels(
+                screen,
+                price_rect,
+                [ae_min, ae_max],
+                font,
+                span_seconds=int(instrument_points * instrument_interval),
+                unit="AE",
+                precision=4,
+                align_right=True,
+                show_time=False,
+            )
+
+            # AE recon line (dashed)
+            points = []
+            for i, val in enumerate(ae_vals[-instrument_points:]):
+                x = price_rect.left + int(i * price_rect.width / max(len(ae_vals) - 1, 1))
+                y = price_rect.bottom - int(((val - ae_min) / ae_span) * price_rect.height)
+                points.append((x, y))
+            draw_dashed_line(screen, points, (120, 180, 255))
+
+            # AE error band around latest recon
+            if recon and "recon" in recon:
+                recon_val = float(recon["recon"])
+                band = k * ae_std
+                y_low = price_rect.bottom - int(((recon_val - band - ae_min) / ae_span) * price_rect.height)
+                y_high = price_rect.bottom - int(((recon_val + band - ae_min) / ae_span) * price_rect.height)
                 band_surface = pygame.Surface((price_rect.width, price_rect.height), pygame.SRCALPHA)
                 pygame.draw.rect(
                     band_surface,
@@ -513,13 +611,6 @@ def main() -> None:
                     pygame.Rect(0, min(y_high, y_low), price_rect.width, abs(y_high - y_low)),
                 )
                 screen.blit(band_surface, (price_rect.left, price_rect.top))
-                pygame.draw.line(
-                    screen,
-                    (120, 180, 255),
-                    (price_rect.left, y_recon),
-                    (price_rect.right, y_recon),
-                    1,
-                )
 
         # Anomaly highlight on last candle
         if recon and candles:
@@ -537,6 +628,24 @@ def main() -> None:
                     h = price_rect.height
                     border_color = (255, 120, 0) if err <= severe else (255, 40, 40)
                     pygame.draw.rect(screen, border_color, pygame.Rect(x, y, candle_width, h), 2)
+
+        # Prediction hit/miss markers on recent candles
+        if scores and candles:
+            results = scores.get("results") or []
+            for item in results:
+                step = item.get("step")
+                hit = item.get("hit")
+                actual = item.get("actual")
+                if step is None or actual is None:
+                    continue
+                idx = len(candles) - step
+                if idx < 0 or idx >= len(candles):
+                    continue
+                c = candles[idx]
+                y = price_rect.bottom - int(((c["c"] - price_min) / max(price_max - price_min, 1e-6)) * price_rect.height)
+                x = price_rect.left + int(idx * price_rect.width / max(len(candles), 1))
+                color = (80, 200, 120) if hit else (220, 80, 80)
+                pygame.draw.circle(screen, color, (x + 2, y - 6), 3)
 
         price_label = font.render(
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",

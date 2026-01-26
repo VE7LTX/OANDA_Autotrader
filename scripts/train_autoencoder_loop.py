@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 from typing import Iterable
@@ -72,7 +73,7 @@ def load_matrix(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 class AutoEncoderPredictor(nn.Module):
-    def __init__(self, input_dim: int, bottleneck: int) -> None:
+    def __init__(self, input_dim: int, bottleneck: int, horizon: int) -> None:
         super().__init__()
         hidden = max(8, input_dim // 2)
         self.encoder = nn.Sequential(
@@ -89,13 +90,13 @@ class AutoEncoderPredictor(nn.Module):
         self.predictor = nn.Sequential(
             nn.Linear(bottleneck, max(4, bottleneck)),
             nn.ReLU(),
-            nn.Linear(max(4, bottleneck), 1),
+            nn.Linear(max(4, bottleneck), horizon),
         )
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         z = self.encoder(x)
         recon = self.decoder(z)
-        pred = self.predictor(z).squeeze(-1)
+        pred = self.predictor(z)
         return recon, pred
 
 
@@ -120,19 +121,22 @@ def main() -> None:
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--retrain-interval", type=int, default=60)
     parser.add_argument("--k", type=float, default=1.5)
+    parser.add_argument("--interval-secs", type=int, default=5)
+    parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else "cpu")
 
     while True:
         matrix, closes, returns = load_matrix(args.features)
-        if matrix.size == 0 or len(returns) < 2:
+        if matrix.size == 0 or len(returns) < (args.horizon + 1):
             time.sleep(args.retrain_interval)
             continue
 
         # Align X_t -> y_{t+1}
-        X = matrix[:-1]
-        y = returns[1:]
+        n = len(returns) - args.horizon
+        X = matrix[:n]
+        y = np.stack([returns[i + 1 : i + 1 + args.horizon] for i in range(n)], axis=0)
 
         # Normalize per-feature
         mean = X.mean(axis=0)
@@ -140,12 +144,11 @@ def main() -> None:
         std[std == 0] = 1.0
         Xn = (X - mean) / std
 
-        n = Xn.shape[0]
         split = int(n * (1 - args.val_split))
         X_train, X_val = Xn[:split], Xn[split:]
         y_train, y_val = y[:split], y[split:]
 
-        model = AutoEncoderPredictor(Xn.shape[1], args.bottleneck).to(device)
+        model = AutoEncoderPredictor(Xn.shape[1], args.bottleneck, args.horizon).to(device)
         optim = torch.optim.Adam(model.parameters(), lr=args.lr)
         loss_fn = nn.MSELoss()
 
@@ -180,18 +183,18 @@ def main() -> None:
                 recon_v, pred_v = model(X_val_t)
                 val_loss = loss_fn(recon_v, X_val_t).item() + loss_fn(pred_v, y_val_t).item()
                 pred_err = (pred_v - y_val_t).cpu().numpy()
-                pred_std = float(pred_err.std()) if pred_err.size else 0.0
+                pred_std = pred_err.std(axis=0) if pred_err.size else np.zeros(args.horizon)
 
-            status = {
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "epoch": epoch,
-                "loss": round(epoch_loss / steps, 6),
-                "val_loss": round(val_loss, 6),
-                "pred_loss": round(pred_loss_total / steps, 6),
-                "pred_std": round(pred_std, 6),
-                "device": str(device),
-            }
-            write_jsonl(args.status_path, status)
+        status = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "epoch": epoch,
+            "loss": round(epoch_loss / steps, 6),
+            "val_loss": round(val_loss, 6),
+            "pred_loss": round(pred_loss_total / steps, 6),
+            "pred_std_mean": round(float(np.mean(pred_std)) if len(pred_std) else 0.0, 6),
+            "device": str(device),
+        }
+        write_jsonl(args.status_path, status)
 
         # Reconstruction error stats on recent window.
         model.eval()
@@ -199,7 +202,7 @@ def main() -> None:
             recon_all, pred_all = model(torch.tensor(Xn, device=device))
             recon_all = recon_all.cpu().numpy()
         recon_close = recon_all[:, 0] * std[0] + mean[0]
-        actual_close = matrix[:-1, 0]
+        actual_close = matrix[:n, 0]
         errors = np.abs(actual_close - recon_close[: len(actual_close)])
         window_errors = errors[-500:] if len(errors) > 500 else errors
         mean_error = float(window_errors.mean()) if window_errors.size else 0.0
@@ -219,20 +222,28 @@ def main() -> None:
         write_jsonl(args.recon_path, recon_payload)
 
         # Forecast using last feature row
-        last_x = (matrix[-1] - mean) / std
-        last_close = float(closes[-1])
+        last_x = (matrix[n - 1] - mean) / std
+        last_close = float(closes[n - 1])
         model.eval()
         with torch.no_grad():
             _, pred = model(torch.tensor(last_x, device=device).unsqueeze(0))
-            pred_return = float(pred.item())
+            pred_returns = pred.squeeze(0).cpu().numpy()
 
         horizon = []
+        cum_mu = 0.0
+        cum_var = 0.0
         for i in range(1, args.horizon + 1):
-            mean_close = last_close * ((1 + pred_return) ** i)
-            band = pred_std * i * last_close
+            mu = float(pred_returns[i - 1])
+            sigma = float(pred_std[i - 1]) if len(pred_std) >= i else 0.0
+            cum_mu += mu
+            cum_var += sigma * sigma
+            mean_close = last_close * math.exp(cum_mu)
+            band = args.k * math.sqrt(cum_var) * last_close
             horizon.append(
                 {
                     "step": i,
+                    "mu": mu,
+                    "sigma": sigma,
                     "mean": mean_close,
                     "low": mean_close - band,
                     "high": mean_close + band,
@@ -243,13 +254,18 @@ def main() -> None:
             args.pred_path,
             {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "model_version": os.getenv("AE_MODEL_VERSION", "ae_v1"),
+                "interval_secs": args.interval_secs,
+                "horizon_secs": args.horizon * args.interval_secs,
                 "base_close": last_close,
                 "k": args.k,
-                "pred_std": pred_std,
+                "pred_std": pred_std.tolist() if hasattr(pred_std, "tolist") else pred_std,
                 "horizon": horizon,
             },
         )
 
+        if args.once:
+            break
         time.sleep(args.retrain_interval)
 
 

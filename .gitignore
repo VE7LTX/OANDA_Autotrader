@@ -190,6 +190,9 @@ accounts.yml
 # Data exports
 data/
 
+# Local screenshots
+Screenshot *.png
+
 # Allow committed samples
 !.env.example
 !accounts.yaml.example

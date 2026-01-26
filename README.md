@@ -155,6 +155,11 @@ python scripts/train_autoencoder.py --features data/usd_cad_features.jsonl --epo
 python scripts/train_autoencoder_loop.py --features data/usd_cad_features.jsonl --retrain-interval 60
 ```
 
+## Prediction Scoring
+```bash
+python scripts/score_predictions.py
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

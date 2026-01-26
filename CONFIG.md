@@ -68,6 +68,9 @@
 - `scripts/train_autoencoder_loop.py` retrains on a schedule and writes predictions to `data/predictions.jsonl`.
 - `scripts/train_autoencoder_loop.py` also writes reconstruction stats to `data/recon.jsonl`.
 
+## Prediction Scoring
+- `scripts/score_predictions.py` writes labeled outcomes to `data/prediction_scores.jsonl`.
+
 ## Dashboard
 - `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)
 - `OANDA_DASHBOARD_HISTORY` (default: 120)

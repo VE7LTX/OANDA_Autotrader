@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, "src")
 
-from oanda_autotrader.app import build_stream_client, load_account_client, load_instruments_client
+from oanda_autotrader.app import build_stream_client, load_account_client
 from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
 from oanda_autotrader.monitor import measure_account_latency
 from oanda_autotrader.stream_metrics import StreamMetrics
@@ -42,14 +42,19 @@ class SharedState:
         self.live_pl: float | None = None
         self.live_balance: float | None = None
         self.last_summary_ts: float | None = None
-        self.instrument_closes: list[float] = []
+        self.instrument_candles: list[dict] = []
         self.instrument_times: list[str] = []
         self.instrument_last_close: float | None = None
         self.instrument_last_volume: int | None = None
         self.instrument_last_ts: str | None = None
         self.autoencoder_status: dict | None = None
         self.predictions: dict | None = None
+        self.recon: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
+        self.candle_interval = 5
+        self.max_candles = 120
+        self._bucket_start: float | None = None
+        self._bucket: dict | None = None
 
     def update_latency(self, kind: str, value: float, max_points: int) -> None:
         with self.lock:
@@ -68,12 +73,14 @@ class SharedState:
             self.live_balance = balance
             self.last_summary_ts = time.time()
 
-    def update_instrument(self, closes: list[float], times: list[str], last_volume: int | None) -> None:
+    def update_instrument(
+        self, candles: list[dict], times: list[str], last_volume: int | None
+    ) -> None:
         with self.lock:
-            self.instrument_closes = closes
+            self.instrument_candles = candles
             self.instrument_times = times
-            if closes:
-                self.instrument_last_close = closes[-1]
+            if candles:
+                self.instrument_last_close = candles[-1]["c"]
             if times:
                 self.instrument_last_ts = times[-1]
             self.instrument_last_volume = last_volume
@@ -85,6 +92,32 @@ class SharedState:
     def update_predictions(self, preds: dict | None) -> None:
         with self.lock:
             self.predictions = preds
+
+    def update_recon(self, recon: dict | None) -> None:
+        with self.lock:
+            self.recon = recon
+
+    def update_tick(self, price: float, ts: float) -> None:
+        with self.lock:
+            if self._bucket_start is None:
+                self._bucket_start = ts - (ts % self.candle_interval)
+                self._bucket = {"o": price, "h": price, "l": price, "c": price, "v": 1, "ts": self._bucket_start}
+                return
+            if ts >= self._bucket_start + self.candle_interval:
+                if self._bucket:
+                    self.instrument_candles.append(self._bucket)
+                    self.instrument_candles = self.instrument_candles[-self.max_candles :]
+                    self.instrument_last_close = self._bucket["c"]
+                    self.instrument_last_ts = datetime.fromtimestamp(self._bucket_start, tz=timezone.utc).isoformat()
+                    self.instrument_last_volume = self._bucket["v"]
+                self._bucket_start = ts - (ts % self.candle_interval)
+                self._bucket = {"o": price, "h": price, "l": price, "c": price, "v": 1, "ts": self._bucket_start}
+                return
+            if self._bucket:
+                self._bucket["c"] = price
+                self._bucket["h"] = max(self._bucket["h"], price)
+                self._bucket["l"] = min(self._bucket["l"], price)
+                self._bucket["v"] += 1
 
 
 def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
@@ -117,39 +150,6 @@ def summary_loop(state: SharedState, interval: int, group: str, account: str) ->
         time.sleep(interval)
 
 
-def instrument_loop(
-    state: SharedState,
-    interval: int,
-    group: str,
-    account: str,
-    instrument: str,
-    history_points: int,
-) -> None:
-    while True:
-        try:
-            client = load_instruments_client("accounts.yaml", group, account)
-            payload = client.get_candles(
-                instrument,
-                price="M",
-                granularity="S5",
-                count=history_points,
-            )
-            candles = payload.get("candles", [])
-            closes = []
-            times = []
-            last_volume = None
-            for candle in candles:
-                mid = candle.get("mid") or {}
-                close = mid.get("c")
-                if close is None:
-                    continue
-                closes.append(float(close))
-                times.append(candle.get("time", ""))
-                last_volume = candle.get("volume") or candle.get("v")
-            state.update_instrument(closes, times, int(last_volume) if last_volume else None)
-        except Exception:
-            pass
-        time.sleep(interval)
 
 
 def autoencoder_status_loop(state: SharedState, interval: int, path: str) -> None:
@@ -181,13 +181,39 @@ def predictions_loop(state: SharedState, interval: int, path: str) -> None:
         state.update_predictions(preds)
         time.sleep(interval)
 
+
+def recon_loop(state: SharedState, interval: int, path: str) -> None:
+    while True:
+        recon = None
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.read().strip().splitlines()
+                    if lines:
+                        recon = json.loads(lines[-1])
+        except Exception:
+            recon = None
+        state.update_recon(recon)
+        time.sleep(interval)
+
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
     config = resolve_account_credentials(group_obj, entry)
     async with build_stream_client(config, on_event=state.stream_metrics.on_event) as stream:
-        async for _ in stream.stream_pricing(entry.account_id, [instrument]):
-            pass
+        async for msg in stream.stream_pricing(entry.account_id, [instrument]):
+            payload = msg.raw if hasattr(msg, "raw") else msg
+            if payload.get("type") != "PRICE":
+                continue
+            bids = payload.get("bids") or []
+            asks = payload.get("asks") or []
+            if not bids or not asks:
+                continue
+            bid = float(bids[0].get("price"))
+            ask = float(asks[0].get("price"))
+            mid = (bid + ask) / 2.0
+            ts = time.time()
+            state.update_tick(mid, ts)
 
 
 def draw_graph(screen, values, color, rect):
@@ -204,6 +230,24 @@ def draw_graph(screen, values, color, rect):
     pygame.draw.lines(screen, color, False, points, 2)
 
 
+def draw_candles(screen, candles, rect, *, min_val: float, max_val: float):
+    if len(candles) < 2:
+        return
+    span = max(max_val - min_val, max_val * 0.002, 1e-6)
+    candle_width = max(2, int(rect.width / max(len(candles), 1)) - 2)
+    for i, c in enumerate(candles):
+        x = rect.left + int(i * rect.width / max(len(candles), 1))
+        y_high = rect.bottom - int(((c["h"] - min_val) / span) * rect.height)
+        y_low = rect.bottom - int(((c["l"] - min_val) / span) * rect.height)
+        y_open = rect.bottom - int(((c["o"] - min_val) / span) * rect.height)
+        y_close = rect.bottom - int(((c["c"] - min_val) / span) * rect.height)
+        color = (80, 200, 120) if c["c"] >= c["o"] else (220, 80, 80)
+        pygame.draw.line(screen, color, (x + candle_width // 2, y_high), (x + candle_width // 2, y_low), 1)
+        body_top = min(y_open, y_close)
+        body_h = max(abs(y_close - y_open), 2)
+        pygame.draw.rect(screen, color, pygame.Rect(x, body_top, candle_width, body_h))
+
+
 def draw_grid(screen, rect, rows=5, cols=5, color=(40, 46, 60)):
     for i in range(1, rows):
         y = rect.top + int(i * rect.height / rows)
@@ -214,24 +258,35 @@ def draw_grid(screen, rect, rows=5, cols=5, color=(40, 46, 60)):
 
 
 def draw_axis_labels(
-    screen, rect, values, font, *, span_seconds: int, color=(180, 180, 180)
+    screen,
+    rect,
+    values,
+    font,
+    *,
+    span_seconds: int,
+    unit: str | None = None,
+    precision: int = 1,
+    color=(180, 180, 180),
 ):
     if not values:
         return
     max_val = max(values)
     min_val = min(values)
     span = max(max_val - min_val, 1.0)
-    top_label = font.render(f"{max_val:.1f} ms", True, color)
-    mid_label = font.render(f"{(min_val + span / 2):.1f} ms", True, color)
-    bot_label = font.render(f"{min_val:.1f} ms", True, color)
-    screen.blit(top_label, (rect.left + 5, rect.top + 5))
-    screen.blit(mid_label, (rect.left + 5, rect.centery - 10))
-    screen.blit(bot_label, (rect.left + 5, rect.bottom - 25))
+    suffix = f" {unit}" if unit else ""
+    fmt = f"{{:.{precision}f}}"
+    top_label = font.render(f"{fmt.format(max_val)}{suffix}", True, color)
+    mid_label = font.render(f"{fmt.format(min_val + span / 2)}{suffix}", True, color)
+    bot_label = font.render(f"{fmt.format(min_val)}{suffix}", True, color)
+    inset = 6
+    screen.blit(top_label, (rect.left + inset, rect.top + inset))
+    screen.blit(mid_label, (rect.left + inset, rect.centery - 10))
+    screen.blit(bot_label, (rect.left + inset, rect.bottom - 25))
 
     left_label = font.render("0s", True, color)
     right_label = font.render(f"{span_seconds}s", True, color)
-    screen.blit(left_label, (rect.left + 5, rect.bottom + 5))
-    screen.blit(right_label, (rect.right - right_label.get_width() - 5, rect.bottom + 5))
+    screen.blit(left_label, (rect.left + inset, rect.bottom - 20))
+    screen.blit(right_label, (rect.right - right_label.get_width() - inset, rect.bottom - 20))
 
 
 def main() -> None:
@@ -241,12 +296,14 @@ def main() -> None:
     stream_group = _env("OANDA_DASHBOARD_GROUP", "live")
     stream_account = _env("OANDA_DASHBOARD_ACCOUNT", "Primary")
     summary_interval = _env_int("OANDA_DASHBOARD_SUMMARY_INTERVAL", 10)
-    instrument_interval = _env_int("OANDA_DASHBOARD_CANDLE_INTERVAL", 10)
+    instrument_interval = _env_int("OANDA_DASHBOARD_CANDLE_INTERVAL", 5)
     instrument_points = _env_int("OANDA_DASHBOARD_CANDLE_POINTS", 120)
     autoencoder_status_path = _env("OANDA_DASHBOARD_AE_STATUS_PATH", "data/ae_status.jsonl")
     autoencoder_status_interval = _env_int("OANDA_DASHBOARD_AE_STATUS_INTERVAL", 5)
     preds_path = _env("OANDA_DASHBOARD_PRED_PATH", "data/predictions.jsonl")
     preds_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL", 5)
+    recon_path = _env("OANDA_DASHBOARD_RECON_PATH", "data/recon.jsonl")
+    recon_interval = _env_int("OANDA_DASHBOARD_RECON_INTERVAL", 5)
 
     state = SharedState()
     start_ts = time.time()
@@ -259,18 +316,8 @@ def main() -> None:
         args=(state, summary_interval, stream_group, stream_account),
         daemon=True,
     ).start()
-    threading.Thread(
-        target=instrument_loop,
-        args=(
-            state,
-            instrument_interval,
-            stream_group,
-            stream_account,
-            instrument,
-            instrument_points,
-        ),
-        daemon=True,
-    ).start()
+    state.candle_interval = instrument_interval
+    state.max_candles = instrument_points
     threading.Thread(
         target=autoencoder_status_loop,
         args=(state, autoencoder_status_interval, autoencoder_status_path),
@@ -279,6 +326,11 @@ def main() -> None:
     threading.Thread(
         target=predictions_loop,
         args=(state, preds_interval, preds_path),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=recon_loop,
+        args=(state, recon_interval, recon_path),
         daemon=True,
     ).start()
 
@@ -290,7 +342,7 @@ def main() -> None:
     ).start()
 
     pygame.init()
-    screen = pygame.display.set_mode((1000, 600))
+    screen = pygame.display.set_mode((1100, 680))
     pygame.display.set_caption("OANDA Dashboard")
     font = pygame.font.SysFont("Consolas", 20)
 
@@ -308,31 +360,34 @@ def main() -> None:
             practice_hist = list(state.practice_history)
             live_hist = list(state.live_history)
             metrics = state.stream_metrics.snapshot()
-            closes = list(state.instrument_closes)
+            candles = list(state.instrument_candles)
             last_close = state.instrument_last_close
             last_vol = state.instrument_last_volume
             last_candle_ts = state.instrument_last_ts
             ae_status = state.autoencoder_status
             preds = state.predictions
+            recon = state.recon
 
+        padding = 20
+        line_h = 26
         header = font.render("OANDA Live Dashboard", True, (230, 230, 230))
-        screen.blit(header, (20, 20))
+        screen.blit(header, (padding, padding))
 
         line1 = font.render(
-            f"Latency (ms)  Practice: {practice:.2f}  Live: {live:.2f}"
-            if practice is not None and live is not None
-            else "Latency (ms)  Practice: --  Live: --",
+            f"{instrument} | {instrument_interval}s candles   AE mode: reconstruction   Anomaly σ: 2.0",
             True,
             (200, 200, 200),
         )
-        screen.blit(line1, (20, 60))
+        screen.blit(line1, (padding, padding + line_h))
 
         line2 = font.render(
-            f"Stream {instrument}  msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}",
+            f"Latency live: {live:.2f} ms | practice: {practice:.2f} ms"
+            if practice is not None and live is not None
+            else "Latency live: -- | practice: --",
             True,
             (200, 200, 200),
         )
-        screen.blit(line2, (20, 100))
+        screen.blit(line2, (padding, padding + line_h * 2))
 
         uptime_seconds = int(time.time() - start_ts)
         uptime_label = f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}"
@@ -344,44 +399,70 @@ def main() -> None:
         pl_text = f"{state.live_pl:.2f}" if state.live_pl is not None else "--"
         bal_text = f"{state.live_balance:.2f}" if state.live_balance is not None else "--"
         line3 = font.render(
-            f"reconnects: {metrics.reconnect_waits}  errors: {metrics.errors}  last_error: {last_err}  uptime: {uptime_label}",
+            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  uptime: {uptime_label}",
             True,
             (200, 200, 200),
         )
-        screen.blit(line3, (20, 140))
+        screen.blit(line3, (padding, padding + line_h * 3))
 
         line4 = font.render(
-            f"P&L: {pl_text}  balance: {bal_text}",
+            f"P&L: {pl_text}  balance: {bal_text}  errors: {metrics.errors}  last_error: {last_err}",
             True,
             (200, 200, 200),
         )
-        screen.blit(line4, (20, 175))
+        screen.blit(line4, (padding, padding + line_h * 4))
 
-        graph_rect = pygame.Rect(20, 210, 960, 150)
+        charts_top = padding + line_h * 5 + 10
+        chart_h = 160
+        graph_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h)
         pygame.draw.rect(screen, (30, 36, 48), graph_rect)
         draw_grid(screen, graph_rect)
         draw_graph(screen, practice_hist, (80, 200, 120), graph_rect)
         draw_graph(screen, live_hist, (80, 140, 220), graph_rect)
         combined = practice_hist + live_hist
         span_seconds = int(max_points * interval)
-        draw_axis_labels(screen, graph_rect, combined, font, span_seconds=span_seconds)
+        draw_axis_labels(
+            screen,
+            graph_rect,
+            combined,
+            font,
+            span_seconds=span_seconds,
+            unit="ms",
+            precision=1,
+        )
 
         legend1 = font.render("Practice latency", True, (80, 200, 120))
         legend2 = font.render("Live latency", True, (80, 140, 220))
-        screen.blit(legend1, (20, 370))
-        screen.blit(legend2, (220, 370))
+        screen.blit(legend1, (padding, graph_rect.bottom + 6))
+        screen.blit(legend2, (padding + 220, graph_rect.bottom + 6))
 
-        price_rect = pygame.Rect(20, 400, 960, 150)
+        price_rect = pygame.Rect(padding, graph_rect.bottom + 40, 1060 - padding * 2, chart_h)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
         draw_grid(screen, price_rect)
-        draw_graph(screen, closes, (230, 190, 80), price_rect)
-        all_vals = list(closes)
+        all_vals = []
+        for c in candles:
+            all_vals.extend([c["l"], c["h"]])
         pred_points = []
         if preds and "horizon" in preds:
             for item in preds["horizon"]:
                 pred_points.append(item["mean"])
                 all_vals.extend([item["low"], item["high"]])
-        draw_axis_labels(screen, price_rect, all_vals, font, span_seconds=int(instrument_points * instrument_interval))
+        if all_vals:
+            min_val = min(all_vals)
+            max_val = max(all_vals)
+        else:
+            min_val = 0.0
+            max_val = 1.0
+        draw_candles(screen, candles, price_rect, min_val=min_val, max_val=max_val)
+        draw_axis_labels(
+            screen,
+            price_rect,
+            all_vals,
+            font,
+            span_seconds=int(instrument_points * instrument_interval),
+            unit=None,
+            precision=5,
+        )
 
         if pred_points:
             # Draw prediction band as an expanding cloud.
@@ -391,9 +472,7 @@ def main() -> None:
             step_px = max(8, int(price_rect.width / max(len(pred_points) + 2, 1)))
             start_x = price_rect.right - (len(pred_points) * step_px) - 10
             # Map to screen coords using full scale.
-            min_val = min(all_vals)
-            max_val = max(all_vals)
-            span = max(max_val - min_val, 1.0)
+            span = max(max_val - min_val, max_val * 0.002, 1e-6)
             points_low = []
             points_high = []
             points_mean = []
@@ -416,12 +495,55 @@ def main() -> None:
             if points_mean:
                 pygame.draw.lines(screen, (120, 180, 255), False, points_mean, 2)
 
+        # AE reconstruction band (current window)
+        if recon and "recon" in recon:
+            recon_price = recon["recon"]
+            mean_err = recon.get("mean_error", 0.0)
+            std_err = recon.get("std_error", 0.0)
+            k = recon.get("k", 1.5)
+            band = k * std_err
+            if band > 0:
+                y_recon = price_rect.bottom - int(((recon_price - min_val) / span) * price_rect.height)
+                y_low = price_rect.bottom - int(((recon_price - band - min_val) / span) * price_rect.height)
+                y_high = price_rect.bottom - int(((recon_price + band - min_val) / span) * price_rect.height)
+                band_surface = pygame.Surface((price_rect.width, price_rect.height), pygame.SRCALPHA)
+                pygame.draw.rect(
+                    band_surface,
+                    (70, 120, 200, 60),
+                    pygame.Rect(0, min(y_high, y_low), price_rect.width, abs(y_high - y_low)),
+                )
+                screen.blit(band_surface, (price_rect.left, price_rect.top))
+                pygame.draw.line(
+                    screen,
+                    (120, 180, 255),
+                    (price_rect.left, y_recon),
+                    (price_rect.right, y_recon),
+                    1,
+                )
+
+        # Anomaly highlight on last candle
+        if recon and candles:
+            err = recon.get("error")
+            mean_err = recon.get("mean_error", 0.0)
+            std_err = recon.get("std_error", 0.0)
+            if err is not None and std_err is not None:
+                threshold = mean_err + 2 * std_err
+                severe = mean_err + 3 * std_err
+                if err > threshold:
+                    last_index = len(candles) - 1
+                    candle_width = max(2, int(price_rect.width / max(len(candles), 1)) - 2)
+                    x = price_rect.left + int(last_index * price_rect.width / max(len(candles), 1))
+                    y = price_rect.top
+                    h = price_rect.height
+                    border_color = (255, 120, 0) if err <= severe else (255, 40, 40)
+                    pygame.draw.rect(screen, border_color, pygame.Rect(x, y, candle_width, h), 2)
+
         price_label = font.render(
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",
             True,
             (200, 200, 200),
         )
-        screen.blit(price_label, (20, 560))
+        screen.blit(price_label, (padding, price_rect.bottom + 6))
 
         ae_text = "--"
         if ae_status:
@@ -430,11 +552,13 @@ def main() -> None:
                 parts.append(f"epoch {ae_status['epoch']}")
             if "loss" in ae_status:
                 parts.append(f"loss {ae_status['loss']}")
+            if "val_loss" in ae_status:
+                parts.append(f"val {ae_status['val_loss']}")
             if "ts" in ae_status:
                 parts.append(f"ts {ae_status['ts']}")
             ae_text = " | ".join(parts) if parts else "--"
         ae_label = font.render(f"AE status: {ae_text}", True, (200, 200, 200))
-        screen.blit(ae_label, (20, 585))
+        screen.blit(ae_label, (padding, price_rect.bottom + 32))
 
         pygame.display.flip()
         clock.tick(30)

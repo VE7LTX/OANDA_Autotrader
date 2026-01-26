@@ -137,8 +137,8 @@ Dashboard panels:
 - Latency (practice/live) with auto-scale grid and axes.
 - Stream metrics (msgs/sec, errors, reconnects, uptime).
 - Account summary (P&L, balance).
-- Instrument chart (latest candles).
-- Autoencoder status (reads latest JSONL entry).
+- Instrument chart (candlesticks built from tick stream).
+- Autoencoder status + reconstruction band + anomaly highlight.
 
 ## Autoencoder Status Feed (Dummy)
 ```bash

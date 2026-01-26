@@ -115,9 +115,11 @@ def main() -> None:
     parser.add_argument("--use-cuda", action="store_true")
     parser.add_argument("--status-path", default="data/ae_status.jsonl")
     parser.add_argument("--pred-path", default="data/predictions.jsonl")
+    parser.add_argument("--recon-path", default="data/recon.jsonl")
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--retrain-interval", type=int, default=60)
+    parser.add_argument("--k", type=float, default=1.5)
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else "cpu")
@@ -191,6 +193,31 @@ def main() -> None:
             }
             write_jsonl(args.status_path, status)
 
+        # Reconstruction error stats on recent window.
+        model.eval()
+        with torch.no_grad():
+            recon_all, pred_all = model(torch.tensor(Xn, device=device))
+            recon_all = recon_all.cpu().numpy()
+        recon_close = recon_all[:, 0] * std[0] + mean[0]
+        actual_close = matrix[:-1, 0]
+        errors = np.abs(actual_close - recon_close[: len(actual_close)])
+        window_errors = errors[-500:] if len(errors) > 500 else errors
+        mean_error = float(window_errors.mean()) if window_errors.size else 0.0
+        std_error = float(window_errors.std()) if window_errors.size else 0.0
+        last_recon = float(recon_close[-1])
+        last_actual = float(actual_close[-1])
+        last_error = abs(last_actual - last_recon)
+        recon_payload = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "actual": last_actual,
+            "recon": last_recon,
+            "error": last_error,
+            "mean_error": mean_error,
+            "std_error": std_error,
+            "k": args.k,
+        }
+        write_jsonl(args.recon_path, recon_payload)
+
         # Forecast using last feature row
         last_x = (matrix[-1] - mean) / std
         last_close = float(closes[-1])
@@ -217,6 +244,8 @@ def main() -> None:
             {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 "base_close": last_close,
+                "k": args.k,
+                "pred_std": pred_std,
                 "horizon": horizon,
             },
         )

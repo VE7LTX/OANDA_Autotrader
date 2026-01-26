@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.dashboard_pygame import load_latest_prediction
+from scripts.dashboard_pygame import _parse_timestamp, load_latest_prediction
 
 
 def test_load_latest_prediction_skips_stale(tmp_path: Path) -> None:
@@ -26,3 +26,9 @@ def test_load_latest_prediction_skips_stale(tmp_path: Path) -> None:
 def test_load_latest_prediction_missing_file(tmp_path: Path) -> None:
     path = tmp_path / "missing.jsonl"
     assert load_latest_prediction(str(path)) is None
+
+
+def test_parse_timestamp_nanoseconds() -> None:
+    dt = _parse_timestamp("2026-01-01T00:00:10.123456789Z")
+    assert dt is not None
+    assert dt.year == 2026

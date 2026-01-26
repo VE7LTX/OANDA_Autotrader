@@ -33,6 +33,28 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _parse_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1]
+    if "." in raw:
+        head, frac = raw.split(".", 1)
+        frac = frac[:6].ljust(6, "0")
+        raw = f"{head}.{frac}"
+    try:
+        return datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _fmt_float(value: float | None, precision: int = 5) -> str:
+    if value is None:
+        return "--"
+    return f"{value:.{precision}f}"
+
+
 class SharedState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -465,7 +487,7 @@ def main() -> None:
         screen.blit(header, (padding, padding))
 
         line1 = font.render(
-            f"{instrument} | {instrument_interval}s candles   AE mode: reconstruction   Anomaly σ: 2.0",
+            f"{instrument} | {instrument_interval}s candles   AE mode: reconstruction   Anomaly sigma: 2.0",
             True,
             (200, 200, 200),
         )
@@ -510,7 +532,31 @@ def main() -> None:
         )
         screen.blit(line4, (padding, padding + line_h * 4))
 
-        charts_top = padding + line_h * 5 + 10
+        pred_status = "PRED: --"
+        pred_ts_label = "--"
+        pred_base = None
+        pred_step1 = None
+        pred_stepN = None
+        pred_recent = False
+        pred_record = preds if preds and "horizon" in preds else None
+        pred_dt = _parse_timestamp(pred_record.get("ts")) if pred_record else None
+        last_candle_dt = _parse_timestamp(last_candle_ts) if last_candle_ts else None
+        if pred_dt:
+            pred_ts_label = pred_dt.strftime("%H:%M:%S")
+            pred_age = time.time() - pred_dt.timestamp()
+            if last_candle_dt:
+                drift = abs((last_candle_dt - pred_dt).total_seconds())
+                pred_recent = drift <= max(instrument_interval * 2, 10)
+            else:
+                pred_recent = pred_age <= 120
+        if pred_record and pred_recent:
+            horizon = pred_record.get("horizon") or []
+            if horizon:
+                pred_base = pred_record.get("base_close")
+                pred_step1 = horizon[0].get("mean")
+                pred_stepN = horizon[-1].get("mean")
+
+        charts_top = padding + line_h * 6 + 10
         chart_h = 180
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
@@ -519,19 +565,6 @@ def main() -> None:
         for c in candles:
             price_vals.extend([c["l"], c["h"]])
         pred_points = []
-        if preds and "horizon" in preds:
-            pred_ts = preds.get("ts")
-            if pred_ts:
-                try:
-                    pred_epoch = datetime.fromisoformat(pred_ts.replace("Z", "+00:00"))
-                    age = time.time() - pred_epoch.timestamp()
-                except ValueError:
-                    age = 0
-            else:
-                age = 0
-            if age <= 120:
-                for item in preds["horizon"]:
-                    pred_points.append(item["mean"])
         if price_vals:
             price_min = min(price_vals)
             price_max = max(price_vals)
@@ -541,6 +574,27 @@ def main() -> None:
         else:
             price_min = 0.0
             price_max = 1.0
+        if pred_record:
+            if not pred_recent:
+                pred_status = "PRED: stale"
+            else:
+                horizon = pred_record.get("horizon") or []
+                lows = [item.get("low") for item in horizon if item.get("low") is not None]
+                highs = [item.get("high") for item in horizon if item.get("high") is not None]
+                mean_vals = [item.get("mean") for item in horizon if item.get("mean") is not None]
+                if lows and highs and mean_vals:
+                    pred_low = min(lows)
+                    pred_high = max(highs)
+                    pred_in_view = pred_low <= price_max and pred_high >= price_min
+                    pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
+                    pred_points = mean_vals if pred_in_view else []
+
+        line5 = font.render(
+            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line5, (padding, padding + line_h * 5))
         draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max)
         draw_axis_labels(
             screen,
@@ -552,11 +606,11 @@ def main() -> None:
             precision=5,
         )
 
-        if pred_points:
+        if pred_points and pred_record:
             # Draw prediction band as an expanding cloud.
-            lows = [item["low"] for item in preds["horizon"]]
-            highs = [item["high"] for item in preds["horizon"]]
-            mean_vals = [item["mean"] for item in preds["horizon"]]
+            lows = [item["low"] for item in pred_record["horizon"]]
+            highs = [item["high"] for item in pred_record["horizon"]]
+            mean_vals = [item["mean"] for item in pred_record["horizon"]]
             step_px = max(8, int(price_rect.width / max(len(pred_points) + 2, 1)))
             start_x = price_rect.right - (len(pred_points) * step_px) - 10
             # Map to screen coords using full scale.

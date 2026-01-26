@@ -13,6 +13,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 import subprocess
+from pathlib import Path
 
 import pygame
 import sys
@@ -256,6 +257,7 @@ def _log_dashboard_json(event: str, payload: dict) -> None:
 
 def build_prediction_command(
     *,
+    script_path: str,
     features_path: str,
     retrain_interval: int,
     epochs: int,
@@ -265,7 +267,7 @@ def build_prediction_command(
 ) -> list[str]:
     cmd = [
         sys.executable,
-        "scripts/train_autoencoder_loop.py",
+        script_path,
         "--features",
         features_path,
         "--retrain-interval",
@@ -282,10 +284,10 @@ def build_prediction_command(
     return cmd
 
 
-def build_score_command(*, every_seconds: int) -> list[str]:
+def build_score_command(*, script_path: str, every_seconds: int) -> list[str]:
     return [
         sys.executable,
-        "scripts/score_predictions.py",
+        script_path,
         "--watch",
         "--every",
         str(every_seconds),
@@ -297,6 +299,9 @@ def start_dashboard_processes() -> list[subprocess.Popen]:
     if not _env_bool("OANDA_DASHBOARD_AUTOSTART", True):
         return processes
 
+    repo_root = Path(__file__).resolve().parents[1]
+    pred_script = str(repo_root / "scripts" / "train_autoencoder_loop.py")
+    score_script = str(repo_root / "scripts" / "score_predictions.py")
     pred_features = _env("OANDA_DASHBOARD_PRED_FEATURES", "data/usd_cad_features.jsonl")
     pred_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL_SECS", 5)
     pred_horizon = _env_int("OANDA_DASHBOARD_PRED_HORIZON", 12)
@@ -309,6 +314,7 @@ def start_dashboard_processes() -> list[subprocess.Popen]:
     score_log = _env("OANDA_DASHBOARD_SCORE_LOG", "data/score_runner.log")
 
     pred_cmd = build_prediction_command(
+        script_path=pred_script,
         features_path=pred_features,
         retrain_interval=pred_retrain,
         epochs=pred_epochs,
@@ -316,7 +322,7 @@ def start_dashboard_processes() -> list[subprocess.Popen]:
         interval_secs=pred_interval,
         archive=pred_archive,
     )
-    score_cmd = build_score_command(every_seconds=score_every)
+    score_cmd = build_score_command(script_path=score_script, every_seconds=score_every)
 
     os.makedirs(os.path.dirname(pred_log), exist_ok=True)
     os.makedirs(os.path.dirname(score_log), exist_ok=True)
@@ -325,10 +331,10 @@ def start_dashboard_processes() -> list[subprocess.Popen]:
 
     _log_dashboard_json("dashboard_autostart", {"pred_cmd": pred_cmd, "score_cmd": score_cmd})
     processes.append(
-        subprocess.Popen(pred_cmd, stdout=pred_handle, stderr=pred_handle)
+        subprocess.Popen(pred_cmd, stdout=pred_handle, stderr=pred_handle, cwd=str(repo_root))
     )
     processes.append(
-        subprocess.Popen(score_cmd, stdout=score_handle, stderr=score_handle)
+        subprocess.Popen(score_cmd, stdout=score_handle, stderr=score_handle, cwd=str(repo_root))
     )
     return processes
 

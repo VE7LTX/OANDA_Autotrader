@@ -8,13 +8,14 @@ import asyncio
 import os
 import threading
 import time
+from datetime import datetime, timezone
 
 import pygame
 import sys
 
 sys.path.insert(0, "src")
 
-from oanda_autotrader.app import build_stream_client
+from oanda_autotrader.app import build_stream_client, load_account_client
 from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
 from oanda_autotrader.monitor import measure_account_latency
 from oanda_autotrader.stream_metrics import StreamMetrics
@@ -37,6 +38,9 @@ class SharedState:
         self.live_latency_ms: float | None = None
         self.practice_history: list[float] = []
         self.live_history: list[float] = []
+        self.live_pl: float | None = None
+        self.live_balance: float | None = None
+        self.last_summary_ts: float | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
 
     def update_latency(self, kind: str, value: float, max_points: int) -> None:
@@ -50,6 +54,12 @@ class SharedState:
                 self.live_history.append(value)
                 self.live_history = self.live_history[-max_points:]
 
+    def update_summary(self, pl: float | None, balance: float | None) -> None:
+        with self.lock:
+            self.live_pl = pl
+            self.live_balance = balance
+            self.last_summary_ts = time.time()
+
 
 def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
     while True:
@@ -62,6 +72,23 @@ def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
             pass
         time.sleep(interval)
 
+
+def summary_loop(state: SharedState, interval: int, group: str, account: str) -> None:
+    while True:
+        try:
+            client = load_account_client("accounts.yaml", group, account)
+            groups = load_account_groups("accounts.yaml")
+            group_obj, entry = select_account(groups, group, account)
+            payload = client.get_account_summary(entry.account_id)
+            account = payload.get("account", {})
+            pl = float(account.get("pl")) if account.get("pl") is not None else None
+            balance = (
+                float(account.get("balance")) if account.get("balance") is not None else None
+            )
+            state.update_summary(pl, balance)
+        except Exception:
+            pass
+        time.sleep(interval)
 
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
@@ -122,12 +149,19 @@ def main() -> None:
     instrument = _env("OANDA_DASHBOARD_INSTRUMENT", "USD_CAD")
     stream_group = _env("OANDA_DASHBOARD_GROUP", "live")
     stream_account = _env("OANDA_DASHBOARD_ACCOUNT", "Primary")
+    summary_interval = _env_int("OANDA_DASHBOARD_SUMMARY_INTERVAL", 10)
 
     state = SharedState()
+    start_ts = time.time()
     t = threading.Thread(
         target=latency_loop, args=(state, interval, max_points), daemon=True
     )
     t.start()
+    threading.Thread(
+        target=summary_loop,
+        args=(state, summary_interval, stream_group, stream_account),
+        daemon=True,
+    ).start()
 
     loop = asyncio.new_event_loop()
     threading.Thread(
@@ -175,14 +209,30 @@ def main() -> None:
         )
         screen.blit(line2, (20, 100))
 
+        uptime_seconds = int(time.time() - start_ts)
+        uptime_label = f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}"
+        last_err = (
+            datetime.fromtimestamp(metrics.last_error_ts, tz=timezone.utc).strftime("%H:%M:%S")
+            if metrics.last_error_ts
+            else "--"
+        )
+        pl_text = f"{state.live_pl:.2f}" if state.live_pl is not None else "--"
+        bal_text = f"{state.live_balance:.2f}" if state.live_balance is not None else "--"
         line3 = font.render(
-            f"reconnects: {metrics.reconnect_waits}  errors: {metrics.errors}  last_error: {metrics.last_error}",
+            f"reconnects: {metrics.reconnect_waits}  errors: {metrics.errors}  last_error: {last_err}  uptime: {uptime_label}",
             True,
             (200, 200, 200),
         )
         screen.blit(line3, (20, 140))
 
-        graph_rect = pygame.Rect(20, 200, 960, 150)
+        line4 = font.render(
+            f"P&L: {pl_text}  balance: {bal_text}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line4, (20, 175))
+
+        graph_rect = pygame.Rect(20, 210, 960, 150)
         pygame.draw.rect(screen, (30, 36, 48), graph_rect)
         draw_grid(screen, graph_rect)
         draw_graph(screen, practice_hist, (80, 200, 120), graph_rect)

@@ -123,6 +123,11 @@ python scripts/capture_usd_cad_stream.py
 python scripts/build_dataset.py --input-dir data --window 64 --stride 8 --format jsonl
 ```
 
+## Feature Builder (RSI/SMA/EMA/Returns)
+```bash
+python scripts/build_features.py --input-dir data --output data/usd_cad_features.jsonl
+```
+
 ## Live Dashboard (Pygame)
 ```bash
 python scripts/dashboard_pygame.py

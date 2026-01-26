@@ -21,6 +21,8 @@ class StreamMetricsSnapshot:
     errors: int
     last_error: str | None
     last_message_ts: float | None
+    last_error_ts: float | None
+    last_reconnect_ts: float | None
 
 
 class StreamMetrics:
@@ -36,6 +38,8 @@ class StreamMetrics:
         self.errors = 0
         self.last_error: str | None = None
         self.last_message_ts: float | None = None
+        self.last_error_ts: float | None = None
+        self.last_reconnect_ts: float | None = None
 
     def on_event(self, event: dict) -> None:
         event_type = event.get("event")
@@ -48,10 +52,12 @@ class StreamMetrics:
             return
         if event_type == "stream_reconnect_wait":
             self.reconnect_waits += 1
+            self.last_reconnect_ts = event.get("received_ts", time.time())
             return
         if event_type == "stream_error":
             self.errors += 1
             self.last_error = event.get("error")
+            self.last_error_ts = event.get("received_ts", time.time())
 
     def _trim(self, now: float) -> None:
         window_start = now - self._window_seconds
@@ -71,4 +77,6 @@ class StreamMetrics:
             errors=self.errors,
             last_error=self.last_error,
             last_message_ts=self.last_message_ts,
+            last_error_ts=self.last_error_ts,
+            last_reconnect_ts=self.last_reconnect_ts,
         )

@@ -189,8 +189,14 @@ def predictions_loop(state: SharedState, interval: int, path: str) -> None:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as handle:
                     lines = handle.read().strip().splitlines()
-                    if lines:
-                        preds = json.loads(lines[-1])
+                    for line in reversed(lines):
+                        if not line:
+                            continue
+                        candidate = json.loads(line)
+                        if "horizon_secs" not in candidate or "horizon" not in candidate:
+                            continue
+                        preds = candidate
+                        break
         except Exception:
             preds = None
         state.update_predictions(preds)

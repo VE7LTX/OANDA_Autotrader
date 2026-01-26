@@ -369,7 +369,7 @@ def main() -> None:
     instrument_points = _env_int("OANDA_DASHBOARD_CANDLE_POINTS", 120)
     autoencoder_status_path = _env("OANDA_DASHBOARD_AE_STATUS_PATH", "data/ae_status.jsonl")
     autoencoder_status_interval = _env_int("OANDA_DASHBOARD_AE_STATUS_INTERVAL", 5)
-    preds_path = _env("OANDA_DASHBOARD_PRED_PATH", "data/predictions.jsonl")
+    preds_path = _env("OANDA_DASHBOARD_PRED_PATH", "data/predictions_latest.jsonl")
     preds_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL", 5)
     recon_path = _env("OANDA_DASHBOARD_RECON_PATH", "data/recon.jsonl")
     recon_interval = _env_int("OANDA_DASHBOARD_RECON_INTERVAL", 5)

@@ -106,6 +106,12 @@ def write_jsonl(path: str, payload: dict) -> None:
         handle.write(json.dumps(payload) + "\n")
 
 
+def write_json_latest(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload) + "\n")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", default="data/usd_cad_features.jsonl")
@@ -115,7 +121,10 @@ def main() -> None:
     parser.add_argument("--bottleneck", type=int, default=8)
     parser.add_argument("--use-cuda", action="store_true")
     parser.add_argument("--status-path", default="data/ae_status.jsonl")
-    parser.add_argument("--pred-path", default="data/predictions.jsonl")
+    parser.add_argument("--pred-path", default=None)
+    parser.add_argument("--pred-latest-path", default="data/predictions_latest.jsonl")
+    parser.add_argument("--pred-archive-dir", default="data/predictions")
+    parser.add_argument("--archive-predictions", action="store_true")
     parser.add_argument("--recon-path", default="data/recon.jsonl")
     parser.add_argument("--val-split", type=float, default=0.2)
     parser.add_argument("--horizon", type=int, default=5)
@@ -125,6 +134,7 @@ def main() -> None:
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--max-delta", type=float, default=0.0005)
     args = parser.parse_args()
+    pred_latest_path = args.pred_latest_path or args.pred_path or "data/predictions_latest.jsonl"
 
     device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else "cpu")
 
@@ -269,19 +279,21 @@ def main() -> None:
                 }
             )
 
-        write_jsonl(
-            args.pred_path,
-            {
-                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "model_version": os.getenv("AE_MODEL_VERSION", "ae_v1"),
-                "interval_secs": args.interval_secs,
-                "horizon_secs": args.horizon * args.interval_secs,
-                "base_close": last_close,
-                "k": args.k,
-                "pred_std": pred_std.tolist() if hasattr(pred_std, "tolist") else pred_std,
-                "horizon": horizon,
-            },
-        )
+        pred_payload = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "model_version": os.getenv("AE_MODEL_VERSION", "ae_v1"),
+            "interval_secs": args.interval_secs,
+            "horizon_secs": args.horizon * args.interval_secs,
+            "base_close": last_close,
+            "k": args.k,
+            "pred_std": pred_std.tolist() if hasattr(pred_std, "tolist") else pred_std,
+            "horizon": horizon,
+        }
+        write_json_latest(pred_latest_path, pred_payload)
+        if args.archive_predictions:
+            stamp = time.strftime("%Y%m%d_%H%M", time.gmtime())
+            archive_path = os.path.join(args.pred_archive_dir, f"predictions_{stamp}.jsonl")
+            write_jsonl(archive_path, pred_payload)
 
         if args.once:
             break

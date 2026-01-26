@@ -12,6 +12,7 @@ import threading
 import time
 import traceback
 from datetime import datetime, timezone
+import subprocess
 
 import pygame
 import sys
@@ -39,6 +40,11 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None or value == "":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    return float(value) if value else default
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -246,6 +252,93 @@ def _log_dashboard_json(event: str, payload: dict) -> None:
     line = json.dumps({"ts": stamp, "event": event, **payload}, ensure_ascii=True)
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(line + "\n")
+
+
+def build_prediction_command(
+    *,
+    features_path: str,
+    retrain_interval: int,
+    epochs: int,
+    horizon: int,
+    interval_secs: int,
+    archive: bool,
+) -> list[str]:
+    cmd = [
+        sys.executable,
+        "scripts/train_autoencoder_loop.py",
+        "--features",
+        features_path,
+        "--retrain-interval",
+        str(retrain_interval),
+        "--epochs",
+        str(epochs),
+        "--horizon",
+        str(horizon),
+        "--interval-secs",
+        str(interval_secs),
+    ]
+    if archive:
+        cmd.append("--archive-predictions")
+    return cmd
+
+
+def build_score_command(*, every_seconds: int) -> list[str]:
+    return [
+        sys.executable,
+        "scripts/score_predictions.py",
+        "--watch",
+        "--every",
+        str(every_seconds),
+    ]
+
+
+def start_dashboard_processes() -> list[subprocess.Popen]:
+    processes: list[subprocess.Popen] = []
+    if not _env_bool("OANDA_DASHBOARD_AUTOSTART", True):
+        return processes
+
+    pred_features = _env("OANDA_DASHBOARD_PRED_FEATURES", "data/usd_cad_features.jsonl")
+    pred_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL_SECS", 5)
+    pred_horizon = _env_int("OANDA_DASHBOARD_PRED_HORIZON", 12)
+    pred_epochs = _env_int("OANDA_DASHBOARD_PRED_EPOCHS", 1)
+    pred_retrain = _env_int("OANDA_DASHBOARD_PRED_RETRAIN_INTERVAL", 60)
+    pred_archive = _env_bool("OANDA_DASHBOARD_PRED_ARCHIVE", False)
+    score_every = _env_int("OANDA_DASHBOARD_SCORE_EVERY", 10)
+
+    pred_log = _env("OANDA_DASHBOARD_PRED_LOG", "data/prediction_runner.log")
+    score_log = _env("OANDA_DASHBOARD_SCORE_LOG", "data/score_runner.log")
+
+    pred_cmd = build_prediction_command(
+        features_path=pred_features,
+        retrain_interval=pred_retrain,
+        epochs=pred_epochs,
+        horizon=pred_horizon,
+        interval_secs=pred_interval,
+        archive=pred_archive,
+    )
+    score_cmd = build_score_command(every_seconds=score_every)
+
+    os.makedirs(os.path.dirname(pred_log), exist_ok=True)
+    os.makedirs(os.path.dirname(score_log), exist_ok=True)
+    pred_handle = open(pred_log, "a", encoding="utf-8")
+    score_handle = open(score_log, "a", encoding="utf-8")
+
+    _log_dashboard_json("dashboard_autostart", {"pred_cmd": pred_cmd, "score_cmd": score_cmd})
+    processes.append(
+        subprocess.Popen(pred_cmd, stdout=pred_handle, stderr=pred_handle)
+    )
+    processes.append(
+        subprocess.Popen(score_cmd, stdout=score_handle, stderr=score_handle)
+    )
+    return processes
+
+
+def stop_dashboard_processes(processes: list[subprocess.Popen]) -> None:
+    for proc in processes:
+        try:
+            proc.terminate()
+        except Exception:
+            continue
 
 
 def predictions_loop(state: SharedState, interval: int, path: str) -> None:
@@ -480,6 +573,7 @@ def main() -> None:
     event_log_until = time.time() + 10
     ignore_quit = _env_bool("OANDA_DASHBOARD_IGNORE_QUIT", False)
     last_tick_log = time.time()
+    processes = start_dashboard_processes()
     while running:
         for event in pygame.event.get():
             if time.time() < event_log_until:
@@ -795,6 +889,7 @@ def main() -> None:
             last_tick_log = time.time()
 
     _log_dashboard_event("dashboard_exit")
+    stop_dashboard_processes(processes)
     pygame.quit()
 
 

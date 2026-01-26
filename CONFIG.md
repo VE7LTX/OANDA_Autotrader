@@ -91,3 +91,4 @@
 - `OANDA_DASHBOARD_PRED_INTERVAL` (default: 5)
 - `OANDA_DASHBOARD_RECON_PATH` (default: data/recon.jsonl)
 - `OANDA_DASHBOARD_RECON_INTERVAL` (default: 5)
+- `OANDA_DASHBOARD_LOG_PATH` (default: data/dashboard.log)

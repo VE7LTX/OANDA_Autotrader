@@ -9,6 +9,7 @@ import json
 import os
 import threading
 import time
+import traceback
 from datetime import datetime, timezone
 
 import pygame
@@ -198,6 +199,14 @@ def load_latest_prediction(path: str) -> dict | None:
     except Exception:
         return None
     return None
+
+
+def _log_dashboard_event(message: str) -> None:
+    path = os.getenv("OANDA_DASHBOARD_LOG_PATH", "data/dashboard.log")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(f"{stamp} {message}\n")
 
 
 def predictions_loop(state: SharedState, interval: int, path: str) -> None:
@@ -686,4 +695,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        _log_dashboard_event("dashboard_start")
+        main()
+    except Exception:
+        _log_dashboard_event("dashboard_error")
+        _log_dashboard_event(traceback.format_exc())
+        raise

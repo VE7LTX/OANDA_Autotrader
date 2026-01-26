@@ -540,6 +540,8 @@ def main() -> None:
         pred_base = None
         pred_step1 = None
         pred_stepN = None
+        pred_low = None
+        pred_high = None
         pred_recent = False
         pred_record = preds if preds and "horizon" in preds else None
         pred_dt = _parse_timestamp(pred_record.get("ts")) if pred_record else None
@@ -558,8 +560,17 @@ def main() -> None:
                 pred_base = pred_record.get("base_close")
                 pred_step1 = horizon[0].get("mean")
                 pred_stepN = horizon[-1].get("mean")
+                pred_low = min(item.get("low") for item in horizon if item.get("low") is not None)
+                pred_high = max(item.get("high") for item in horizon if item.get("high") is not None)
 
-        charts_top = padding + line_h * 6 + 10
+        line5 = font.render(
+            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line5, (padding, padding + line_h * 5))
+
+        charts_top = padding + line_h * 7 + 10
         chart_h = 180
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
@@ -592,12 +603,12 @@ def main() -> None:
                     pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
                     pred_points = mean_vals if pred_in_view else []
 
-        line5 = font.render(
-            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+        line6 = font.render(
+            f"pred_low/high: {_fmt_float(pred_low)} / {_fmt_float(pred_high)}  price_min/max: {_fmt_float(price_min)} / {_fmt_float(price_max)}",
             True,
             (200, 200, 200),
         )
-        screen.blit(line5, (padding, padding + line_h * 5))
+        screen.blit(line6, (padding, padding + line_h * 6))
         draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max)
         draw_axis_labels(
             screen,
@@ -661,8 +672,8 @@ def main() -> None:
                 [ae_min, ae_max],
                 font,
                 span_seconds=int(instrument_points * instrument_interval),
-                unit="AE",
-                precision=4,
+                unit="recon",
+                precision=5,
                 align_right=True,
                 show_time=False,
             )

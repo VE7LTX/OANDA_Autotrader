@@ -145,6 +145,11 @@ Dashboard panels:
 python scripts/write_ae_status.py
 ```
 
+## Autoencoder Training (PyTorch)
+```bash
+python scripts/train_autoencoder.py --features data/usd_cad_features.jsonl --epochs 20 --batch-size 64
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

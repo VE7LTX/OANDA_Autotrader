@@ -60,7 +60,11 @@
 ## Autoencoder Status Feed
 - Write JSONL status updates to `data/ae_status.jsonl` for dashboard display.
 - Example line: `{"ts":"2026-01-26T00:45:00Z","epoch":5,"loss":0.0123}`
- - Dummy writer: `scripts/write_ae_status.py` appends a new status every 2s.
+- Dummy writer: `scripts/write_ae_status.py` appends a new status every 2s.
+
+## Autoencoder Training
+- `scripts/train_autoencoder.py` trains a small PyTorch AE on feature rows.
+- Outputs status updates to `data/ae_status.jsonl` per epoch.
 
 ## Dashboard
 - `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)

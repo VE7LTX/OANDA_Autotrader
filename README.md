@@ -123,6 +123,11 @@ python scripts/capture_usd_cad_stream.py
 python scripts/build_dataset.py --input-dir data --window 64 --stride 8 --format jsonl
 ```
 
+## Live Dashboard (Pygame)
+```bash
+python scripts/dashboard_pygame.py
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

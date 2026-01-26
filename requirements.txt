@@ -1,3 +1,4 @@
 requests>=2.31.0
 PyYAML>=6.0.1
 aiohttp>=3.9.0
+pygame>=2.5.0

@@ -1,0 +1,172 @@
+"""
+Live dashboard using pygame.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import threading
+import time
+
+import pygame
+import sys
+
+sys.path.insert(0, "src")
+
+from oanda_autotrader.app import build_stream_client
+from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
+from oanda_autotrader.monitor import measure_account_latency
+from oanda_autotrader.stream_metrics import StreamMetrics
+
+
+def _env(name: str, default: str) -> str:
+    value = os.getenv(name)
+    return value if value else default
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    return int(value) if value else default
+
+
+class SharedState:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.practice_latency_ms: float | None = None
+        self.live_latency_ms: float | None = None
+        self.practice_history: list[float] = []
+        self.live_history: list[float] = []
+        self.stream_metrics = StreamMetrics(window_seconds=10)
+
+    def update_latency(self, kind: str, value: float, max_points: int) -> None:
+        with self.lock:
+            if kind == "practice":
+                self.practice_latency_ms = value
+                self.practice_history.append(value)
+                self.practice_history = self.practice_history[-max_points:]
+            else:
+                self.live_latency_ms = value
+                self.live_history.append(value)
+                self.live_history = self.live_history[-max_points:]
+
+
+def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
+    while True:
+        try:
+            _, ms = measure_account_latency("accounts.yaml", "demo", "Primary")
+            state.update_latency("practice", ms, max_points)
+            _, ms = measure_account_latency("accounts.yaml", "live", "Primary")
+            state.update_latency("live", ms, max_points)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
+    groups = load_account_groups("accounts.yaml")
+    group_obj, entry = select_account(groups, group, account)
+    config = resolve_account_credentials(group_obj, entry)
+    async with build_stream_client(config, on_event=state.stream_metrics.on_event) as stream:
+        async for _ in stream.stream_pricing(entry.account_id, [instrument]):
+            pass
+
+
+def draw_graph(screen, values, color, rect):
+    if len(values) < 2:
+        return
+    max_val = max(values) if max(values) > 0 else 1.0
+    min_val = min(values)
+    span = max(max_val - min_val, 1.0)
+    points = []
+    for i, value in enumerate(values):
+        x = rect.left + int(i * rect.width / max(len(values) - 1, 1))
+        y = rect.bottom - int(((value - min_val) / span) * rect.height)
+        points.append((x, y))
+    pygame.draw.lines(screen, color, False, points, 2)
+
+
+def main() -> None:
+    interval = _env_int("OANDA_DASHBOARD_LATENCY_INTERVAL", 5)
+    max_points = _env_int("OANDA_DASHBOARD_HISTORY", 120)
+    instrument = _env("OANDA_DASHBOARD_INSTRUMENT", "USD_CAD")
+    stream_group = _env("OANDA_DASHBOARD_GROUP", "live")
+    stream_account = _env("OANDA_DASHBOARD_ACCOUNT", "Primary")
+
+    state = SharedState()
+    t = threading.Thread(
+        target=latency_loop, args=(state, interval, max_points), daemon=True
+    )
+    t.start()
+
+    loop = asyncio.new_event_loop()
+    threading.Thread(
+        target=loop.run_until_complete,
+        args=(stream_loop(state, stream_group, stream_account, instrument),),
+        daemon=True,
+    ).start()
+
+    pygame.init()
+    screen = pygame.display.set_mode((1000, 600))
+    pygame.display.set_caption("OANDA Dashboard")
+    font = pygame.font.SysFont("Consolas", 20)
+
+    clock = pygame.time.Clock()
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+
+        screen.fill((10, 12, 16))
+        with state.lock:
+            practice = state.practice_latency_ms
+            live = state.live_latency_ms
+            practice_hist = list(state.practice_history)
+            live_hist = list(state.live_history)
+            metrics = state.stream_metrics.snapshot()
+
+        header = font.render("OANDA Live Dashboard", True, (230, 230, 230))
+        screen.blit(header, (20, 20))
+
+        line1 = font.render(
+            f"Latency (ms)  Practice: {practice:.2f}  Live: {live:.2f}"
+            if practice is not None and live is not None
+            else "Latency (ms)  Practice: --  Live: --",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line1, (20, 60))
+
+        line2 = font.render(
+            f"Stream {instrument}  msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line2, (20, 100))
+
+        line3 = font.render(
+            f"reconnects: {metrics.reconnect_waits}  errors: {metrics.errors}  last_error: {metrics.last_error}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line3, (20, 140))
+
+        graph_rect = pygame.Rect(20, 200, 960, 150)
+        pygame.draw.rect(screen, (30, 36, 48), graph_rect)
+        draw_graph(screen, practice_hist, (80, 200, 120), graph_rect)
+        draw_graph(screen, live_hist, (80, 140, 220), graph_rect)
+
+        legend1 = font.render("Practice latency", True, (80, 200, 120))
+        legend2 = font.render("Live latency", True, (80, 140, 220))
+        screen.blit(legend1, (20, 370))
+        screen.blit(legend2, (220, 370))
+
+        pygame.display.flip()
+        clock.tick(30)
+
+    pygame.quit()
+
+
+if __name__ == "__main__":
+    main()

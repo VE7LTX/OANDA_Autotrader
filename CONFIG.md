@@ -53,3 +53,10 @@
 ## Dataset Builder
 - `scripts/build_dataset.py` reads `data/usd_cad_candles_*.jsonl`.
 - Outputs windows of normalized close prices for autoencoder training.
+
+## Dashboard
+- `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)
+- `OANDA_DASHBOARD_HISTORY` (default: 120)
+- `OANDA_DASHBOARD_INSTRUMENT` (default: USD_CAD)
+- `OANDA_DASHBOARD_GROUP` (default: live)
+- `OANDA_DASHBOARD_ACCOUNT` (default: Primary)

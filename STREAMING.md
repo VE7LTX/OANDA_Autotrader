@@ -30,6 +30,10 @@ long-lived GET request open and receives newline-delimited JSON messages.
 - Network errors trigger reconnect if enabled.
 - For debugging, enable `OANDA_DEBUG_LOGGING` to see request logs.
 
+## Metrics
+- `StreamMetrics` aggregates messages/sec, errors, reconnect waits.
+- Hook it into streaming via `build_stream_client(config, on_event=metrics.on_event)`.
+
 ## Next Ideas
 - Add structured logging on reconnects and stream errors.
 - Record stream latency by comparing server timestamps with local clock.

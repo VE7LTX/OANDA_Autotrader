@@ -22,6 +22,7 @@ from typing import Any, AsyncIterator, Callable
 import json
 import asyncio
 import random
+import time
 
 import aiohttp
 
@@ -86,7 +87,16 @@ class OandaStreamClient:
                         except json.JSONDecodeError:
                             # Skip malformed lines to keep stream alive.
                             continue
-                        yield parser(payload) if parser else parse_stream_message(payload)
+                        parsed = parser(payload) if parser else parse_stream_message(payload)
+                        if self.on_event:
+                            self.on_event(
+                                {
+                                    "event": "stream_message",
+                                    "type": getattr(parsed, "type", None),
+                                    "received_ts": time.time(),
+                                }
+                            )
+                        yield parsed
                 # A clean stream end should not auto-reconnect unless enabled.
                 if not self.reconnect:
                     break

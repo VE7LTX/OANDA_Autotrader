@@ -30,6 +30,7 @@ from .models import (
     HeartbeatMessage,
     parse_stream_message,
 )
+from .stream_metrics import StreamMetrics, StreamMetricsSnapshot
 from .validation import validate_account_groups, validate_connectivity
 from .app import (
     validate_account_connection,
@@ -70,6 +71,8 @@ __all__ = [
     "TransactionMessage",
     "HeartbeatMessage",
     "parse_stream_message",
+    "StreamMetrics",
+    "StreamMetricsSnapshot",
     "validate_account_groups",
     "validate_connectivity",
     "validate_account_connection",

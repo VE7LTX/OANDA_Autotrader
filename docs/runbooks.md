@@ -56,6 +56,16 @@ Optional environment overrides:
 - OANDA_DASHBOARD_PRED_RETRAIN_INTERVAL=60
 - OANDA_DASHBOARD_SCORE_EVERY=10
 
+## Detached dashboard (survives terminal close)
+```powershell
+scripts\launch_dashboard.ps1
+```
+
+Options:
+- `-UsePythonw` (no console window)
+- `-IgnoreQuit` (ignore QUIT events for debugging)
+- `-WorkingDir` (override repo root)
+
 ## Scoring delay note
 Scoring is delayed by definition. For 5s candles and horizon=12, you need
 ~60s of future candles before coverage/MAE resolve.

@@ -698,7 +698,7 @@ if __name__ == "__main__":
     try:
         _log_dashboard_event("dashboard_start")
         main()
-    except Exception:
+    except BaseException:
         _log_dashboard_event("dashboard_error")
         _log_dashboard_event(traceback.format_exc())
         raise

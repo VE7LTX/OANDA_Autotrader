@@ -123,7 +123,7 @@ python scripts/capture_usd_cad_stream.py
 python scripts/build_dataset.py --input-dir data --window 64 --stride 8 --format jsonl
 ```
 
-## Feature Builder (RSI/SMA/EMA/Returns)
+## Feature Builder (Full Indicator Set)
 ```bash
 python scripts/build_features.py --input-dir data --output data/usd_cad_features.jsonl
 ```
@@ -132,6 +132,13 @@ python scripts/build_features.py --input-dir data --output data/usd_cad_features
 ```bash
 python scripts/dashboard_pygame.py
 ```
+
+Dashboard panels:
+- Latency (practice/live) with auto-scale grid and axes.
+- Stream metrics (msgs/sec, errors, reconnects, uptime).
+- Account summary (P&L, balance).
+- Instrument chart (latest candles).
+- Autoencoder status (reads latest JSONL entry).
 
 ## Instrument Check
 ```bash

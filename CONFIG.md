@@ -55,7 +55,11 @@
 - Outputs windows of normalized close prices for autoencoder training.
 
 ## Feature Builder
-- `scripts/build_features.py` computes RSI/SMA/EMA/returns/volume.
+- `scripts/build_features.py` computes RSI, SMA/EMA, MACD, Bollinger Bands, ATR, ADX, Stochastic, OBV, VWAP, returns, volume.
+
+## Autoencoder Status Feed
+- Write JSONL status updates to `data/ae_status.jsonl` for dashboard display.
+- Example line: `{"ts":"2026-01-26T00:45:00Z","epoch":5,"loss":0.0123}`
 
 ## Dashboard
 - `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)
@@ -63,3 +67,8 @@
 - `OANDA_DASHBOARD_INSTRUMENT` (default: USD_CAD)
 - `OANDA_DASHBOARD_GROUP` (default: live)
 - `OANDA_DASHBOARD_ACCOUNT` (default: Primary)
+- `OANDA_DASHBOARD_SUMMARY_INTERVAL` (default: 10)
+- `OANDA_DASHBOARD_CANDLE_INTERVAL` (default: 10)
+- `OANDA_DASHBOARD_CANDLE_POINTS` (default: 120)
+- `OANDA_DASHBOARD_AE_STATUS_PATH` (default: data/ae_status.jsonl)
+- `OANDA_DASHBOARD_AE_STATUS_INTERVAL` (default: 5)

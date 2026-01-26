@@ -15,7 +15,7 @@ import sys
 
 sys.path.insert(0, "src")
 
-from oanda_autotrader.app import build_stream_client, load_account_client
+from oanda_autotrader.app import build_stream_client, load_account_client, load_instruments_client
 from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
 from oanda_autotrader.monitor import measure_account_latency
 from oanda_autotrader.stream_metrics import StreamMetrics
@@ -41,6 +41,12 @@ class SharedState:
         self.live_pl: float | None = None
         self.live_balance: float | None = None
         self.last_summary_ts: float | None = None
+        self.instrument_closes: list[float] = []
+        self.instrument_times: list[str] = []
+        self.instrument_last_close: float | None = None
+        self.instrument_last_volume: int | None = None
+        self.instrument_last_ts: str | None = None
+        self.autoencoder_status: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
 
     def update_latency(self, kind: str, value: float, max_points: int) -> None:
@@ -59,6 +65,20 @@ class SharedState:
             self.live_pl = pl
             self.live_balance = balance
             self.last_summary_ts = time.time()
+
+    def update_instrument(self, closes: list[float], times: list[str], last_volume: int | None) -> None:
+        with self.lock:
+            self.instrument_closes = closes
+            self.instrument_times = times
+            if closes:
+                self.instrument_last_close = closes[-1]
+            if times:
+                self.instrument_last_ts = times[-1]
+            self.instrument_last_volume = last_volume
+
+    def update_autoencoder_status(self, status: dict | None) -> None:
+        with self.lock:
+            self.autoencoder_status = status
 
 
 def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
@@ -88,6 +108,56 @@ def summary_loop(state: SharedState, interval: int, group: str, account: str) ->
             state.update_summary(pl, balance)
         except Exception:
             pass
+        time.sleep(interval)
+
+
+def instrument_loop(
+    state: SharedState,
+    interval: int,
+    group: str,
+    account: str,
+    instrument: str,
+    history_points: int,
+) -> None:
+    while True:
+        try:
+            client = load_instruments_client("accounts.yaml", group, account)
+            payload = client.get_candles(
+                instrument,
+                price="M",
+                granularity="S5",
+                count=history_points,
+            )
+            candles = payload.get("candles", [])
+            closes = []
+            times = []
+            last_volume = None
+            for candle in candles:
+                mid = candle.get("mid") or {}
+                close = mid.get("c")
+                if close is None:
+                    continue
+                closes.append(float(close))
+                times.append(candle.get("time", ""))
+                last_volume = candle.get("volume") or candle.get("v")
+            state.update_instrument(closes, times, int(last_volume) if last_volume else None)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def autoencoder_status_loop(state: SharedState, interval: int, path: str) -> None:
+    while True:
+        status = None
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.read().strip().splitlines()
+                    if lines:
+                        status = json.loads(lines[-1])
+        except Exception:
+            status = None
+        state.update_autoencoder_status(status)
         time.sleep(interval)
 
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
@@ -150,6 +220,10 @@ def main() -> None:
     stream_group = _env("OANDA_DASHBOARD_GROUP", "live")
     stream_account = _env("OANDA_DASHBOARD_ACCOUNT", "Primary")
     summary_interval = _env_int("OANDA_DASHBOARD_SUMMARY_INTERVAL", 10)
+    instrument_interval = _env_int("OANDA_DASHBOARD_CANDLE_INTERVAL", 10)
+    instrument_points = _env_int("OANDA_DASHBOARD_CANDLE_POINTS", 120)
+    autoencoder_status_path = _env("OANDA_DASHBOARD_AE_STATUS_PATH", "data/ae_status.jsonl")
+    autoencoder_status_interval = _env_int("OANDA_DASHBOARD_AE_STATUS_INTERVAL", 5)
 
     state = SharedState()
     start_ts = time.time()
@@ -160,6 +234,23 @@ def main() -> None:
     threading.Thread(
         target=summary_loop,
         args=(state, summary_interval, stream_group, stream_account),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=instrument_loop,
+        args=(
+            state,
+            instrument_interval,
+            stream_group,
+            stream_account,
+            instrument,
+            instrument_points,
+        ),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=autoencoder_status_loop,
+        args=(state, autoencoder_status_interval, autoencoder_status_path),
         daemon=True,
     ).start()
 
@@ -189,6 +280,11 @@ def main() -> None:
             practice_hist = list(state.practice_history)
             live_hist = list(state.live_history)
             metrics = state.stream_metrics.snapshot()
+            closes = list(state.instrument_closes)
+            last_close = state.instrument_last_close
+            last_vol = state.instrument_last_volume
+            last_candle_ts = state.instrument_last_ts
+            ae_status = state.autoencoder_status
 
         header = font.render("OANDA Live Dashboard", True, (230, 230, 230))
         screen.blit(header, (20, 20))
@@ -245,6 +341,32 @@ def main() -> None:
         legend2 = font.render("Live latency", True, (80, 140, 220))
         screen.blit(legend1, (20, 370))
         screen.blit(legend2, (220, 370))
+
+        price_rect = pygame.Rect(20, 400, 960, 150)
+        pygame.draw.rect(screen, (30, 36, 48), price_rect)
+        draw_grid(screen, price_rect)
+        draw_graph(screen, closes, (230, 190, 80), price_rect)
+        draw_axis_labels(screen, price_rect, closes, font, span_seconds=int(instrument_points * instrument_interval))
+
+        price_label = font.render(
+            f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(price_label, (20, 560))
+
+        ae_text = "--"
+        if ae_status:
+            parts = []
+            if "epoch" in ae_status:
+                parts.append(f"epoch {ae_status['epoch']}")
+            if "loss" in ae_status:
+                parts.append(f"loss {ae_status['loss']}")
+            if "ts" in ae_status:
+                parts.append(f"ts {ae_status['ts']}")
+            ae_text = " | ".join(parts) if parts else "--"
+        ae_label = font.render(f"AE status: {ae_text}", True, (200, 200, 200))
+        screen.blit(ae_label, (20, 585))
 
         pygame.display.flip()
         clock.tick(30)

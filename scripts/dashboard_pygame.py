@@ -34,6 +34,13 @@ def _env_int(name: str, default: int) -> int:
     return int(value) if value else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -230,6 +237,15 @@ def _log_dashboard_event(message: str) -> None:
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(f"{stamp} {message}\n")
+
+
+def _log_dashboard_json(event: str, payload: dict) -> None:
+    path = os.getenv("OANDA_DASHBOARD_LOG_PATH", "data/dashboard.log")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    line = json.dumps({"ts": stamp, "event": event, **payload}, ensure_ascii=True)
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write(line + "\n")
 
 
 def predictions_loop(state: SharedState, interval: int, path: str) -> None:
@@ -461,12 +477,27 @@ def main() -> None:
 
     clock = pygame.time.Clock()
     running = True
+    event_log_until = time.time() + 10
+    ignore_quit = _env_bool("OANDA_DASHBOARD_IGNORE_QUIT", False)
     last_tick_log = time.time()
     while running:
         for event in pygame.event.get():
+            if time.time() < event_log_until:
+                try:
+                    name = pygame.event.event_name(event.type)
+                except Exception:
+                    name = str(event.type)
+                _log_dashboard_json(
+                    "pygame_event",
+                    {"type": event.type, "name": name, "dict": getattr(event, "dict", None)},
+                )
             if event.type == pygame.QUIT:
-                _log_dashboard_event("dashboard_quit_event")
-                running = False
+                _log_dashboard_json(
+                    "pygame_quit_received",
+                    {"type": event.type, "name": "QUIT", "dict": getattr(event, "dict", None)},
+                )
+                if not ignore_quit:
+                    running = False
 
         screen.fill((10, 12, 16))
         with state.lock:

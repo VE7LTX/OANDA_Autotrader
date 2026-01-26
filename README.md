@@ -140,6 +140,11 @@ Dashboard panels:
 - Instrument chart (latest candles).
 - Autoencoder status (reads latest JSONL entry).
 
+## Autoencoder Status Feed (Dummy)
+```bash
+python scripts/write_ae_status.py
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

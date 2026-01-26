@@ -60,6 +60,7 @@
 ## Autoencoder Status Feed
 - Write JSONL status updates to `data/ae_status.jsonl` for dashboard display.
 - Example line: `{"ts":"2026-01-26T00:45:00Z","epoch":5,"loss":0.0123}`
+ - Dummy writer: `scripts/write_ae_status.py` appends a new status every 2s.
 
 ## Dashboard
 - `OANDA_DASHBOARD_LATENCY_INTERVAL` (default: 5)

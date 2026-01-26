@@ -110,7 +110,7 @@ Report columns:
 - `orders`, `trades`, `positions`: counts from account details.
 - `ms_*`: per-endpoint latency (milliseconds).
 - `instrument_types`: counts by type (CURRENCY/CFD/METAL).
-More details: `CHECKS.md`.
+More details: `docs/checks.md`.
 
 ## Data Capture (USD_CAD)
 ```bash
@@ -181,7 +181,7 @@ python scripts/run_instrument_checks.py
 ```
 
 ## Performance & Reliability
-Defaults and tuning are in `CONFIG.md`. Key points:
+Defaults and tuning are in `docs/config.md`. Key points:
 - Rate limiting: `OANDA_REQUESTS_PER_SECOND` (default 100).
 - Debug logging: `OANDA_DEBUG_LOGGING` (default false).
 - Stream reconnect/backoff: `OANDA_STREAM_*` (defaults in `.env.example`).
@@ -217,9 +217,13 @@ Note: scoring will remain null until at least 60s of new candles exist after the
 prediction timestamp.
 
 ## Reference Docs
-- `BEST_PRACTICES.md`: OANDA best practices + sync pattern.
-- `STREAMING.md`: stream behavior, reconnect strategy.
-- `CONFIG.md`: env config reference.
-- `CHECKS.md`: health check output and usage notes.
-- `TODO.md`: roadmap and next improvements.
-- `TESTING.md`: test philosophy and coverage.
+- `docs/overview.md`: architecture overview + data flow.
+- `docs/data_contracts.md`: JSONL schemas and examples.
+- `docs/runbooks.md`: run commands for dev/demo/prod.
+- `docs/troubleshooting.md`: common failures and fixes.
+- `docs/best_practices.md`: OANDA best practices + sync pattern.
+- `docs/streaming.md`: stream behavior, reconnect strategy.
+- `docs/config.md`: env config reference.
+- `docs/checks.md`: health check output and usage notes.
+- `docs/todo.md`: roadmap and next improvements.
+- `docs/testing.md`: test philosophy and coverage.

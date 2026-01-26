@@ -84,8 +84,13 @@ def score_once(
             bucket_errors = {label: [] for label, _, _ in bucket_defs}
             bucket_resolved = {label: 0 for label, _, _ in bucket_defs}
             base_dt = None
+            base_ts = pred.get("ts")
             try:
-                base_dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                base_dt = (
+                    datetime.fromisoformat(base_ts.replace("Z", "+00:00"))
+                    if base_ts
+                    else None
+                )
             except ValueError:
                 base_dt = None
             interval_secs = pred.get("interval_secs", 5)

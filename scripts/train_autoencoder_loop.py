@@ -123,20 +123,31 @@ def main() -> None:
     parser.add_argument("--k", type=float, default=1.5)
     parser.add_argument("--interval-secs", type=int, default=5)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--max-delta", type=float, default=0.0005)
     args = parser.parse_args()
 
     device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else "cpu")
 
     while True:
         matrix, closes, returns = load_matrix(args.features)
-        if matrix.size == 0 or len(returns) < (args.horizon + 1):
+        if matrix.size == 0 or len(closes) < (args.horizon + 1):
             time.sleep(args.retrain_interval)
             continue
 
-        # Align X_t -> y_{t+1}
-        n = len(returns) - args.horizon
+        # Align X_t -> delta close for each horizon step.
+        n = len(closes) - args.horizon
         X = matrix[:n]
-        y = np.stack([returns[i + 1 : i + 1 + args.horizon] for i in range(n)], axis=0)
+        y = np.stack(
+            [
+                [
+                    closes[i + k] - closes[i + k - 1]
+                    for k in range(1, args.horizon + 1)
+                ]
+                for i in range(n)
+            ],
+            axis=0,
+        )
+        y = np.clip(y, -args.max_delta, args.max_delta)
 
         # Normalize per-feature
         mean = X.mean(axis=0)
@@ -144,9 +155,15 @@ def main() -> None:
         std[std == 0] = 1.0
         Xn = (X - mean) / std
 
+        # Normalize target deltas per horizon step
+        y_mean = y.mean(axis=0)
+        y_std = y.std(axis=0)
+        y_std[y_std == 0] = 1.0
+        y_norm = (y - y_mean) / y_std
+
         split = int(n * (1 - args.val_split))
         X_train, X_val = Xn[:split], Xn[split:]
-        y_train, y_val = y[:split], y[split:]
+        y_train, y_val = y_norm[:split], y_norm[split:]
 
         model = AutoEncoderPredictor(Xn.shape[1], args.bottleneck, args.horizon).to(device)
         optim = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -183,23 +200,24 @@ def main() -> None:
                 recon_v, pred_v = model(X_val_t)
                 val_loss = loss_fn(recon_v, X_val_t).item() + loss_fn(pred_v, y_val_t).item()
                 pred_err = (pred_v - y_val_t).cpu().numpy()
-                pred_std = pred_err.std(axis=0) if pred_err.size else np.zeros(args.horizon)
+                pred_std_norm = pred_err.std(axis=0) if pred_err.size else np.zeros(args.horizon)
+                pred_std = np.clip(pred_std_norm * y_std, 0.0, args.max_delta)
 
-        status = {
-            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "epoch": epoch,
-            "loss": round(epoch_loss / steps, 6),
-            "val_loss": round(val_loss, 6),
-            "pred_loss": round(pred_loss_total / steps, 6),
-            "pred_std_mean": round(float(np.mean(pred_std)) if len(pred_std) else 0.0, 6),
-            "device": str(device),
-        }
-        write_jsonl(args.status_path, status)
+            status = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "epoch": epoch,
+                "loss": round(epoch_loss / steps, 6),
+                "val_loss": round(val_loss, 6),
+                "pred_loss": round(pred_loss_total / steps, 6),
+                "pred_std_mean": round(float(np.mean(pred_std)) if len(pred_std) else 0.0, 6),
+                "device": str(device),
+            }
+            write_jsonl(args.status_path, status)
 
         # Reconstruction error stats on recent window.
         model.eval()
         with torch.no_grad():
-            recon_all, pred_all = model(torch.tensor(Xn, device=device))
+            recon_all, _ = model(torch.tensor(Xn, device=device))
             recon_all = recon_all.cpu().numpy()
         recon_close = recon_all[:, 0] * std[0] + mean[0]
         actual_close = matrix[:n, 0]
@@ -227,18 +245,19 @@ def main() -> None:
         model.eval()
         with torch.no_grad():
             _, pred = model(torch.tensor(last_x, device=device).unsqueeze(0))
-            pred_returns = pred.squeeze(0).cpu().numpy()
+            pred_deltas = pred.squeeze(0).cpu().numpy() * y_std + y_mean
+            pred_deltas = np.clip(pred_deltas, -args.max_delta, args.max_delta)
 
         horizon = []
         cum_mu = 0.0
         cum_var = 0.0
         for i in range(1, args.horizon + 1):
-            mu = float(pred_returns[i - 1])
+            mu = float(pred_deltas[i - 1])
             sigma = float(pred_std[i - 1]) if len(pred_std) >= i else 0.0
             cum_mu += mu
             cum_var += sigma * sigma
-            mean_close = last_close * math.exp(cum_mu)
-            band = args.k * math.sqrt(cum_var) * last_close
+            mean_close = last_close + cum_mu
+            band = args.k * math.sqrt(cum_var)
             horizon.append(
                 {
                     "step": i,

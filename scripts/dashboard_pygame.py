@@ -5,6 +5,7 @@ Live dashboard using pygame.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import threading
 import time
@@ -47,6 +48,7 @@ class SharedState:
         self.instrument_last_volume: int | None = None
         self.instrument_last_ts: str | None = None
         self.autoencoder_status: dict | None = None
+        self.predictions: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
 
     def update_latency(self, kind: str, value: float, max_points: int) -> None:
@@ -79,6 +81,10 @@ class SharedState:
     def update_autoencoder_status(self, status: dict | None) -> None:
         with self.lock:
             self.autoencoder_status = status
+
+    def update_predictions(self, preds: dict | None) -> None:
+        with self.lock:
+            self.predictions = preds
 
 
 def latency_loop(state: SharedState, interval: int, max_points: int) -> None:
@@ -160,6 +166,21 @@ def autoencoder_status_loop(state: SharedState, interval: int, path: str) -> Non
         state.update_autoencoder_status(status)
         time.sleep(interval)
 
+
+def predictions_loop(state: SharedState, interval: int, path: str) -> None:
+    while True:
+        preds = None
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as handle:
+                    lines = handle.read().strip().splitlines()
+                    if lines:
+                        preds = json.loads(lines[-1])
+        except Exception:
+            preds = None
+        state.update_predictions(preds)
+        time.sleep(interval)
+
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
@@ -224,6 +245,8 @@ def main() -> None:
     instrument_points = _env_int("OANDA_DASHBOARD_CANDLE_POINTS", 120)
     autoencoder_status_path = _env("OANDA_DASHBOARD_AE_STATUS_PATH", "data/ae_status.jsonl")
     autoencoder_status_interval = _env_int("OANDA_DASHBOARD_AE_STATUS_INTERVAL", 5)
+    preds_path = _env("OANDA_DASHBOARD_PRED_PATH", "data/predictions.jsonl")
+    preds_interval = _env_int("OANDA_DASHBOARD_PRED_INTERVAL", 5)
 
     state = SharedState()
     start_ts = time.time()
@@ -251,6 +274,11 @@ def main() -> None:
     threading.Thread(
         target=autoencoder_status_loop,
         args=(state, autoencoder_status_interval, autoencoder_status_path),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=predictions_loop,
+        args=(state, preds_interval, preds_path),
         daemon=True,
     ).start()
 
@@ -285,6 +313,7 @@ def main() -> None:
             last_vol = state.instrument_last_volume
             last_candle_ts = state.instrument_last_ts
             ae_status = state.autoencoder_status
+            preds = state.predictions
 
         header = font.render("OANDA Live Dashboard", True, (230, 230, 230))
         screen.blit(header, (20, 20))
@@ -346,7 +375,46 @@ def main() -> None:
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
         draw_grid(screen, price_rect)
         draw_graph(screen, closes, (230, 190, 80), price_rect)
-        draw_axis_labels(screen, price_rect, closes, font, span_seconds=int(instrument_points * instrument_interval))
+        all_vals = list(closes)
+        pred_points = []
+        if preds and "horizon" in preds:
+            for item in preds["horizon"]:
+                pred_points.append(item["mean"])
+                all_vals.extend([item["low"], item["high"]])
+        draw_axis_labels(screen, price_rect, all_vals, font, span_seconds=int(instrument_points * instrument_interval))
+
+        if pred_points:
+            # Draw prediction band as an expanding cloud.
+            lows = [item["low"] for item in preds["horizon"]]
+            highs = [item["high"] for item in preds["horizon"]]
+            mean_vals = [item["mean"] for item in preds["horizon"]]
+            step_px = max(8, int(price_rect.width / max(len(pred_points) + 2, 1)))
+            start_x = price_rect.right - (len(pred_points) * step_px) - 10
+            # Map to screen coords using full scale.
+            min_val = min(all_vals)
+            max_val = max(all_vals)
+            span = max(max_val - min_val, 1.0)
+            points_low = []
+            points_high = []
+            points_mean = []
+            for i, (low, high, mean) in enumerate(zip(lows, highs, mean_vals)):
+                x = start_x + i * step_px
+                y_low = price_rect.bottom - int(((low - min_val) / span) * price_rect.height)
+                y_high = price_rect.bottom - int(((high - min_val) / span) * price_rect.height)
+                y_mean = price_rect.bottom - int(((mean - min_val) / span) * price_rect.height)
+                points_low.append((x, y_low))
+                points_high.append((x, y_high))
+                points_mean.append((x, y_mean))
+            if points_low and points_high:
+                band_surface = pygame.Surface((price_rect.width, price_rect.height), pygame.SRCALPHA)
+                shifted_low = [(x - price_rect.left, y - price_rect.top) for x, y in points_low]
+                shifted_high = [(x - price_rect.left, y - price_rect.top) for x, y in points_high]
+                pygame.draw.polygon(
+                    band_surface, (80, 120, 200, 60), shifted_low + list(reversed(shifted_high))
+                )
+                screen.blit(band_surface, (price_rect.left, price_rect.top))
+            if points_mean:
+                pygame.draw.lines(screen, (120, 180, 255), False, points_mean, 2)
 
         price_label = font.render(
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",

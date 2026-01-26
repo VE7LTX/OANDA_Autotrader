@@ -150,6 +150,11 @@ python scripts/write_ae_status.py
 python scripts/train_autoencoder.py --features data/usd_cad_features.jsonl --epochs 20 --batch-size 64
 ```
 
+## Autoencoder Training Loop (Continuous)
+```bash
+python scripts/train_autoencoder_loop.py --features data/usd_cad_features.jsonl --retrain-interval 60
+```
+
 ## Instrument Check
 ```bash
 python scripts/run_instrument_checks.py

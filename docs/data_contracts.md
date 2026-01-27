@@ -141,6 +141,12 @@ Stream snapshot fields include:
 - latency_clamped_last_ms / latency_clamped_p95_ms / latency_clamped_mean_ms
 - latency_effective_last_ms / latency_effective_p95_ms / latency_effective_mean_ms
 
+Trade gate fields include:
+- warn (backward-compatible; same as warn_last)
+- warn_last (instantaneous spike based on last_effective_ms)
+- warn_p95 (sustained warning based on effective_p95_ms)
+- effective_p95_ms / effective_mean_ms (windowed stats for gate)
+
 ## Logs
 - data/dashboard.log (dashboard lifecycle + pygame events)
 - data/prediction_runner.log (prediction subprocess stdout/stderr)

@@ -45,6 +45,10 @@ If thresholds are missing:
 should report source=file. If it reports defaults, check
 `config/latency_thresholds/`.
 
+## warn toggling frequently
+- `trade_gate.warn` and `warn_last` are spike-based (last_effective_ms).
+- Use `warn_p95` for sustained warnings based on the windowed p95.
+
 ## No candle data / price scale is 0-1
 Check candle files are updating:
 ```bash

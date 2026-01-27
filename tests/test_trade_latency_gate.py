@@ -40,6 +40,22 @@ def test_gate_uses_effective_ms_for_warn() -> None:
     gate.update(-120.0, effective_ms=40.0, backlog=False, outlier=False, skew_ms=120.0)
     assert gate.state.last_effective_ms == 40.0
     assert gate.should_warn() is True
+    snap = gate.snapshot()
+    assert snap["warn"] is True
+    assert snap["warn_last"] is True
+    assert snap["warn_p95"] is True
+
+
+def test_gate_warn_p95_respects_min_samples() -> None:
+    cfg = TradeLatencyGateConfig(mode="live", instrument="USD_CAD")
+    cfg.min_samples = 5
+    cfg.warn_ms_min = 0
+    cfg.backlog_warn_ms = 20
+    gate = TradeLatencyGate(cfg)
+    for _ in range(4):
+        gate.update(-100.0, effective_ms=30.0, backlog=False, outlier=False, skew_ms=100.0)
+    snap = gate.snapshot()
+    assert snap["warn_p95"] is False
 
 
 def test_suggest_thresholds_clamps() -> None:

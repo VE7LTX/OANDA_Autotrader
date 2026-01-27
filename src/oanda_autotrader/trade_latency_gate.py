@@ -30,6 +30,7 @@ class TradeLatencyGateConfig:
     block_ms_max: float = 750.0
     warn_ms_min: float = 800.0
     warn_ms_max: float = 2500.0
+    effective_window_size: int = 120
 
     def clamp(self) -> None:
         self.backlog_block_ms = min(
@@ -61,6 +62,7 @@ class TradeLatencyGate:
         config.clamp()
         self.config = config
         self.state = TradeLatencyGateState(blocked=True)
+        self._effective_samples: list[float] = []
 
     def update(
         self,
@@ -92,6 +94,11 @@ class TradeLatencyGate:
         if outlier:
             st.outlier_samples += 1
 
+        if effective_ms is not None and not outlier:
+            self._effective_samples.append(effective_ms)
+            if len(self._effective_samples) > self.config.effective_window_size:
+                self._effective_samples = self._effective_samples[-self.config.effective_window_size :]
+
         backlog_hit = backlog or outlier or (sample_ms is not None and sample_ms >= cfg.backlog_block_ms)
         good_hit = (not backlog) and (not outlier) and (sample_ms is not None and sample_ms < cfg.backlog_warn_ms)
 
@@ -122,11 +129,30 @@ class TradeLatencyGate:
             return st.last_effective_ms >= self.config.backlog_warn_ms
         return st.last_raw_ms is not None and st.last_raw_ms >= self.config.backlog_warn_ms
 
+    def effective_stats(self) -> tuple[float | None, float | None]:
+        if not self._effective_samples:
+            return None, None
+        values = sorted(self._effective_samples)
+        mean = sum(values) / len(values)
+        p95_index = max(0, int(round(0.95 * (len(values) - 1))))
+        return values[p95_index], mean
+
     def snapshot(self) -> dict:
+        eff_p95, eff_mean = self.effective_stats()
+        warn_last = self.should_warn()
+        warn_p95 = (
+            self.state.total_samples >= self.config.min_samples
+            and eff_p95 is not None
+            and eff_p95 >= self.config.backlog_warn_ms
+        )
         data = {
             **asdict(self.config),
             **asdict(self.state),
-            "warn": self.should_warn(),
+            "warn": warn_last,
+            "warn_last": warn_last,
+            "warn_p95": warn_p95,
+            "effective_p95_ms": eff_p95,
+            "effective_mean_ms": eff_mean,
         }
         return data
 

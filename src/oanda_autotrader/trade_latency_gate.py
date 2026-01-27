@@ -118,10 +118,14 @@ class TradeLatencyGate:
             st.warn_p95_off_ms = off_threshold
             if st.total_samples >= self.config.min_samples and eff_p95 is not None:
                 if eff_p95 >= on_threshold:
-                    st.p95_warn_streak += 1
+                    st.p95_warn_streak = min(
+                        st.p95_warn_streak + 1, self.config.consecutive_p95_to_warn
+                    )
                     st.p95_clear_streak = 0
                 elif eff_p95 <= off_threshold:
-                    st.p95_clear_streak += 1
+                    st.p95_clear_streak = min(
+                        st.p95_clear_streak + 1, self.config.consecutive_p95_to_clear
+                    )
                     st.p95_warn_streak = 0
                 # within band: keep streaks as-is
             if not st.warn_p95_latched and st.p95_warn_streak >= self.config.consecutive_p95_to_warn:

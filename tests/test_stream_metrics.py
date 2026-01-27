@@ -19,6 +19,7 @@ def test_stream_metrics_errors_and_reconnects() -> None:
     assert snapshot.errors == 1
     assert snapshot.reconnect_waits == 1
     assert snapshot.last_error == "boom"
+    assert snapshot.last_reconnect_ts == 4.0
 
 
 def test_stream_metrics_latency_parsing() -> None:
@@ -29,6 +30,13 @@ def test_stream_metrics_latency_parsing() -> None:
     assert last is not None
     assert p95 is not None
     assert mean is not None
+
+
+def test_stream_metrics_success_ts() -> None:
+    metrics = StreamMetrics(window_seconds=10)
+    metrics.on_event({"event": "stream_message", "received_ts": 5.0})
+    snapshot = metrics.snapshot()
+    assert snapshot.last_success_ts == 5.0
 
 
 def test_stream_metrics_negative_skew_clamped() -> None:

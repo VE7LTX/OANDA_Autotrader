@@ -392,7 +392,14 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
     config = resolve_account_credentials(group_obj, entry)
-    async with build_stream_client(config, on_event=state.stream_metrics.on_event) as stream:
+    def on_event(event: dict) -> None:
+        state.stream_metrics.on_event(event)
+        log_path = os.getenv("OANDA_STREAM_EVENTS_LOG_PATH", "data/stream_events.jsonl")
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event) + "\n")
+
+    async with build_stream_client(config, on_event=on_event) as stream:
         async for msg in stream.stream_pricing(entry.account_id, [instrument]):
             payload = msg.raw if hasattr(msg, "raw") else msg
             if payload.get("type") != "PRICE":
@@ -702,13 +709,17 @@ def main() -> None:
             latency_text = f"{metrics.latency_last_ms:.1f}ms"
             if metrics.latency_p95_ms is not None:
                 latency_text = f"{latency_text} p95 {metrics.latency_p95_ms:.1f}ms"
+        success_age = "--"
+        if metrics.last_success_ts:
+            success_age = f"{int(time.time() - metrics.last_success_ts)}s"
+        reconnects = metrics.reconnect_waits
         trade_gate_text = "--"
         if state.trade_gate is not None:
             gate = state.trade_gate.snapshot()
             status = "BLOCK" if gate.get("blocked") else "OK"
             trade_gate_text = f"{status} warn:{gate.get('warn')}"
         line3 = font.render(
-            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
+            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  last_ok: {success_age}  reconnects: {reconnects}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             True,
             (200, 200, 200),
         )

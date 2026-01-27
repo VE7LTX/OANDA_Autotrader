@@ -116,6 +116,28 @@ def test_warn_p95_turn_off_after_clear_streak() -> None:
     assert snap["warn_p95"] is False
 
 
+def test_warn_aggregate_or_logic() -> None:
+    cfg = TradeLatencyGateConfig(mode="live", instrument="USD_CAD")
+    cfg.min_samples = 1
+    cfg.warn_ms_min = 0
+    cfg.backlog_warn_ms = 20
+    gate = TradeLatencyGate(cfg)
+    gate.update(-120.0, effective_ms=40.0, backlog=False, outlier=False, skew_ms=120.0)
+    snap = gate.snapshot()
+    assert snap["warn_last"] is True
+    assert snap["warn_p95"] is False
+    assert snap["warn"] is True
+    # Force warn_p95 to true without warn_last.
+    gate._effective_samples = [200.0]
+    gate.state.total_samples += 1
+    gate.state.last_effective_ms = 0.0
+    gate.snapshot()
+    snap = gate.snapshot()
+    assert snap["warn_last"] is False
+    assert snap["warn_p95"] is True
+    assert snap["warn"] is True
+
+
 def test_suggest_thresholds_clamps() -> None:
     warn, block = suggest_thresholds(
         [10, 20, 30, 40, 50],

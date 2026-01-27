@@ -142,7 +142,7 @@ Stream snapshot fields include:
 - latency_effective_last_ms / latency_effective_p95_ms / latency_effective_mean_ms
 
 Trade gate fields include:
-- warn (backward-compatible; same as warn_last)
+- warn (aggregate; warn_last OR warn_p95)
 - warn_last (instantaneous spike based on last_effective_ms)
 - warn_p95 (sustained warning based on effective_p95_ms)
 - effective_p95_ms / effective_mean_ms (windowed stats for gate)

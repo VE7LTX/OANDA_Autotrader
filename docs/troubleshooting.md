@@ -46,8 +46,9 @@ should report source=file. If it reports defaults, check
 `config/latency_thresholds/`.
 
 ## warn toggling frequently
-- `trade_gate.warn` and `warn_last` are spike-based (last_effective_ms).
-- Use `warn_p95` for sustained warnings based on the windowed p95.
+- `trade_gate.warn` is aggregate (warn_last OR warn_p95).
+- `warn_last` is spike-based (last_effective_ms).
+- `warn_p95` is sustained based on windowed p95 with hysteresis.
 
 ## No candle data / price scale is 0-1
 Check candle files are updating:

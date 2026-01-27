@@ -163,10 +163,11 @@ class TradeLatencyGate:
             self._warn_p95_latched = False
             self._p95_clear_streak = 0
         warn_p95 = self._warn_p95_latched
+        warn_aggregate = warn_last or warn_p95
         data = {
             **asdict(self.config),
             **asdict(self.state),
-            "warn": warn_last,
+            "warn": warn_aggregate,
             "warn_last": warn_last,
             "warn_p95": warn_p95,
             "effective_p95_ms": eff_p95,

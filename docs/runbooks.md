@@ -78,7 +78,7 @@ python scripts/print_gate_config.py --mode live --instrument USD_CAD
 Trade gate warn fields:
 - warn_last: spike-based (last_effective_ms >= backlog_warn_ms)
 - warn_p95: sustained warning (effective_p95_ms >= backlog_warn_ms)
-- warn: backward-compatible alias of warn_last
+- warn: aggregate (warn_last OR warn_p95)
 
 Detached capture (survives terminal close):
 ```powershell

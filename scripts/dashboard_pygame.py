@@ -23,6 +23,7 @@ sys.path.insert(0, "src")
 from oanda_autotrader.app import build_stream_client, load_account_client
 from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
 from oanda_autotrader.monitor import measure_account_latency
+from oanda_autotrader.monitoring import monitor_loop
 from oanda_autotrader.stream_metrics import StreamMetrics
 from oanda_autotrader.trade_latency_gate import TradeLatencyGate, TradeLatencyGateConfig, profile_path
 
@@ -573,6 +574,8 @@ def main() -> None:
     recon_interval = _env_int("OANDA_DASHBOARD_RECON_INTERVAL", 5)
     scores_path = _env("OANDA_DASHBOARD_SCORE_PATH", "data/prediction_scores.jsonl")
     scores_interval = _env_int("OANDA_DASHBOARD_SCORE_INTERVAL", 5)
+    monitor_interval = _env_float("OANDA_MONITOR_INTERVAL_SECONDS", 15.0)
+    monitor_path = _env("OANDA_MONITOR_PATH", "data/monitor.jsonl")
 
     state = SharedState()
     start_ts = time.time()
@@ -614,6 +617,16 @@ def main() -> None:
     state.trade_gate_instrument = instrument
 
     loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.create_task(
+        monitor_loop(
+            accounts_path="accounts.yaml",
+            interval_seconds=monitor_interval,
+            output_path=monitor_path,
+            stream_metrics=state.stream_metrics,
+            trade_gate=state.trade_gate,
+        )
+    )
     threading.Thread(
         target=loop.run_until_complete,
         args=(stream_loop(state, stream_group, stream_account, instrument),),

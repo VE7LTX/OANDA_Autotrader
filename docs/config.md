@@ -126,3 +126,7 @@ Defaults:
 
 Profiles are written to:
 - data/latency_profile_<mode>_<instrument>.json
+
+## Monitoring Loop
+- `OANDA_MONITOR_INTERVAL_SECONDS` (default: 15.0)
+- `OANDA_MONITOR_PATH` (default: data/monitor.jsonl)

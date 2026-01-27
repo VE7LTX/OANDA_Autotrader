@@ -249,6 +249,13 @@ def load_thresholds(
     # Honor explicit thresholds from file, even if below default mins.
     cfg.warn_ms_min = 0.0
     cfg.block_ms_min = 0.0
+    override = os.getenv("TG_BACKLOG_WARN_MS_OVERRIDE")
+    if override:
+        try:
+            cfg.backlog_warn_ms = float(override)
+            meta["backlog_warn_ms_override"] = cfg.backlog_warn_ms
+        except ValueError:
+            meta["backlog_warn_ms_override"] = "invalid"
     cfg.clamp()
     meta["source"] = "file"
     meta["path"] = path

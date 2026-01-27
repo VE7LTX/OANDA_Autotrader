@@ -770,7 +770,7 @@ def main() -> None:
     ).start()
 
     pygame.init()
-    screen = pygame.display.set_mode((1100, 680))
+    screen = pygame.display.set_mode((1100, 680), pygame.RESIZABLE)
     pygame.display.set_caption("OANDA Dashboard")
     _log_dashboard_event("dashboard_display_ready")
     font = pygame.font.SysFont("Consolas", 20)
@@ -802,8 +802,11 @@ def main() -> None:
                 )
                 if not ignore_quit:
                     running = False
+            if event.type == pygame.VIDEORESIZE:
+                screen = pygame.display.set_mode(event.size, pygame.RESIZABLE)
 
         screen.fill((10, 12, 16))
+        width, height = screen.get_size()
         with state.lock:
             practice = state.practice_latency_ms
             live = state.live_latency_ms
@@ -847,7 +850,7 @@ def main() -> None:
             else "Latency live: -- | practice: --",
             padding,
             y + line_h,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
         y += line_h * max(lines_used, 1)
@@ -888,7 +891,7 @@ def main() -> None:
             f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  last_ok: {success_age}  reconnects: {reconnects}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             padding,
             y + line_h,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
         y += line_h * max(lines_used, 1)
@@ -899,7 +902,7 @@ def main() -> None:
             f"P&L: {pl_text}  balance: {bal_text}  errors: {metrics.errors}  last_error: {last_err}",
             padding,
             y + line_h,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
         y += line_h * max(lines_used, 1)
@@ -940,7 +943,7 @@ def main() -> None:
             f"candles {candle_status} age={candle_age_label}",
             padding,
             y + line_h,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
         y += line_h * max(lines_used, 1)
@@ -950,7 +953,7 @@ def main() -> None:
             "accuracy markers: green=hit red=miss",
             padding,
             y + 2,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (160, 160, 160),
         )
         y += line_h * max(lines_used, 1)
@@ -966,14 +969,14 @@ def main() -> None:
             f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status} {pred_hint}",
             padding,
             y + line_h,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
         y += line_h * max(lines_used, 1)
 
         charts_top = y + line_h * 2
-        chart_h = 180
-        price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
+        chart_height = max(220, height - charts_top - padding - 80)
+        price_rect = pygame.Rect(padding, charts_top, width - padding * 2, chart_height)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
         draw_grid(screen, price_rect)
         # Coverage split band (hit vs miss) behind candles.
@@ -1201,7 +1204,7 @@ def main() -> None:
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",
             padding,
             price_rect.bottom + 6,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
 
@@ -1225,7 +1228,7 @@ def main() -> None:
             f"AE status: {ae_text}",
             padding,
             price_rect.bottom + 32,
-            screen.get_width() - padding * 2,
+            width - padding * 2,
             (200, 200, 200),
         )
 

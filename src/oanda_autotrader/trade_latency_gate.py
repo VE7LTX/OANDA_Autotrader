@@ -173,10 +173,22 @@ def load_thresholds(
     mode: str, instrument: str, *, base_dir: str | None = None
 ) -> tuple[TradeLatencyGateConfig, dict]:
     cfg = TradeLatencyGateConfig(mode=mode, instrument=instrument)
-    path = thresholds_path(mode, instrument, base_dir=base_dir)
+    search_paths = []
+    env_dir = os.getenv("OANDA_LATENCY_THRESHOLDS_DIR")
+    if env_dir:
+        search_paths.append(thresholds_path(mode, instrument, base_dir=env_dir))
+    search_paths.append(thresholds_path(mode, instrument, base_dir=os.path.join("config", "latency_thresholds")))
+    search_paths.append(thresholds_path(mode, instrument, base_dir="data"))
+
+    path = None
+    for candidate in search_paths:
+        if os.path.exists(candidate):
+            path = candidate
+            break
+
     meta = {"path": path, "source": "defaults", "sha1": None}
-    if not os.path.exists(path):
-        print(f"WARNING: threshold file missing, using defaults: {path}")
+    if path is None:
+        print("WARNING: threshold file missing, using defaults.")
         return cfg, meta
     with open(path, "r", encoding="utf-8") as handle:
         content = handle.read()
@@ -190,4 +202,5 @@ def load_thresholds(
     cfg.block_ms_min = 0.0
     cfg.clamp()
     meta["source"] = "file"
+    meta["path"] = path
     return cfg, meta

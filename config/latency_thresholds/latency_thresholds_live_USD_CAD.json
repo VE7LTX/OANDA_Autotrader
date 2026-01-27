@@ -1,0 +1,9 @@
+{
+  "skew_outlier_ms": 1000,
+  "outlier_high_ms": 10000,
+  "backlog_warn_ms": 200,
+  "backlog_block_ms": 400,
+  "consecutive_backlog_to_block": 3,
+  "consecutive_good_to_unblock": 10,
+  "min_samples": 60
+}

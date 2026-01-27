@@ -1113,20 +1113,20 @@ def main() -> None:
 
         # Retrain decision bubble strip (allow/skip) at the bottom of the chart.
         if retrain_hist:
-            strip_h = 10
+            strip_h = 14
             strip_rect = pygame.Rect(
                 price_rect.left,
                 price_rect.bottom - strip_h,
                 price_rect.width,
                 strip_h,
             )
-            step_px = max(4, int(strip_rect.width / max(len(retrain_hist), 1)))
+            step_px = max(6, int(strip_rect.width / max(len(retrain_hist), 1)))
             start_x = strip_rect.right - (len(retrain_hist) * step_px)
             for i, allow in enumerate(retrain_hist):
                 x = start_x + i * step_px + step_px // 2
                 y = strip_rect.top + strip_h // 2
                 color = (80, 200, 120) if allow else (160, 160, 160)
-                pygame.draw.circle(screen, color, (x, y), 3)
+                pygame.draw.circle(screen, color, (x, y), 5)
 
         if pred_points and pred_record:
             # Draw prediction band as an expanding cloud.
@@ -1241,7 +1241,7 @@ def main() -> None:
                 y = price_rect.bottom - int(((c["c"] - price_min) / max(price_max - price_min, 1e-6)) * price_rect.height)
                 x = price_rect.left + int(idx * price_rect.width / max(len(candles), 1))
                 color = (80, 200, 120) if hit else (220, 80, 80)
-                pygame.draw.circle(screen, color, (x + 2, y - 6), 3)
+                pygame.draw.circle(screen, color, (x + 2, y - 6), 5)
 
         draw_text_wrapped(
             screen,

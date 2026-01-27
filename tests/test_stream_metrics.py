@@ -57,6 +57,17 @@ def test_stream_metrics_negative_outlier_clamped() -> None:
     assert last_sample.outlier is True
 
 
+def test_stream_metrics_effective_ms_with_offset() -> None:
+    metrics = StreamMetrics(window_seconds=10)
+    base = datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.2)
+    assert metrics.clock_offset_ms > 0.0
+    assert metrics.last_effective_ms == 0.0
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base + 0.05)
+    assert metrics.last_effective_ms is not None
+    assert metrics.last_effective_ms >= 0.0
+
+
 def test_stream_metrics_backlog_flag() -> None:
     metrics = StreamMetrics(window_seconds=10)
     base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp()

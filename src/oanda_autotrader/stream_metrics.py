@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from statistics import median
 import time
 
 
@@ -38,6 +39,8 @@ class StreamLatencySample:
 
     raw_ms: float
     milliseconds: float
+    effective_ms: float
+    clock_offset_ms: float
     backlog: bool
     skew_ms: float | None
     outlier: bool
@@ -53,6 +56,7 @@ class StreamMetrics:
         self._window_seconds = window_seconds
         self._message_ts: deque[float] = deque()
         self._latency_samples: deque[StreamLatencySample] = deque()
+        self._neg_skew_samples: deque[float] = deque()
         self.messages_total = 0
         self.reconnect_waits = 0
         self.errors = 0
@@ -66,6 +70,9 @@ class StreamMetrics:
         self.last_skew_ms: float | None = None
         self.last_backlog: bool | None = None
         self.last_reconnect_reason: str | None = None
+        self.last_effective_ms: float | None = None
+        self.clock_offset_ms: float = 0.0
+        self.last_outlier: bool | None = None
 
     def on_event(self, event: dict) -> None:
         event_type = event.get("event")
@@ -94,6 +101,8 @@ class StreamMetrics:
             self._message_ts.popleft()
         while self._latency_samples and self._latency_samples[0].timestamp < window_start:
             self._latency_samples.popleft()
+        while len(self._neg_skew_samples) > max(int(self._window_seconds * 10), 10):
+            self._neg_skew_samples.popleft()
 
     def messages_per_second(self) -> float:
         now = time.time()
@@ -108,14 +117,21 @@ class StreamMetrics:
             return
         raw_ms = (received_ts - server_ts) * 1000.0
         latency_ms, skew_ms, backlog, outlier = self._normalize_latency(raw_ms)
+        clock_offset_ms = self._update_clock_offset(raw_ms, outlier=outlier)
+        effective_ms = max(0.0, raw_ms + clock_offset_ms)
         self.last_latency_raw_ms = raw_ms
         self.last_latency_ms = latency_ms
         self.last_skew_ms = skew_ms
         self.last_backlog = backlog
+        self.last_effective_ms = effective_ms
+        self.clock_offset_ms = clock_offset_ms
+        self.last_outlier = outlier
         self._latency_samples.append(
             StreamLatencySample(
                 raw_ms=raw_ms,
                 milliseconds=latency_ms,
+                effective_ms=effective_ms,
+                clock_offset_ms=clock_offset_ms,
                 backlog=backlog,
                 skew_ms=skew_ms,
                 outlier=outlier,
@@ -132,6 +148,14 @@ class StreamMetrics:
         mean = sum(values) / len(values)
         p95_index = max(0, int(round(0.95 * (len(values) - 1))))
         return self.last_latency_ms, values[p95_index], mean
+
+    def _update_clock_offset(self, raw_ms: float, *, outlier: bool) -> float:
+        if raw_ms < 0.0 and not outlier:
+            self._neg_skew_samples.append(abs(raw_ms))
+        if not self._neg_skew_samples:
+            return 0.0
+        offset = median(self._neg_skew_samples)
+        return min(max(offset, 0.0), 1000.0)
 
     @staticmethod
     def _normalize_latency(raw_ms: float) -> tuple[float, float | None, bool, bool]:

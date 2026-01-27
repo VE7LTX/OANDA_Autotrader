@@ -418,6 +418,7 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
             if state.trade_gate is not None:
                 state.trade_gate.update(
                     state.stream_metrics.last_latency_raw_ms,
+                    effective_ms=state.stream_metrics.last_effective_ms,
                     backlog=bool(state.stream_metrics.last_backlog),
                     outlier=bool(
                         state.stream_metrics.last_latency_raw_ms is not None
@@ -438,8 +439,11 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
                     "server_time": payload.get("time"),
                     "latency_ms_raw": state.stream_metrics.last_latency_raw_ms,
                     "latency_ms_clamped": state.stream_metrics.last_latency_ms,
+                    "effective_ms": state.stream_metrics.last_effective_ms,
+                    "clock_offset_ms": state.stream_metrics.clock_offset_ms,
                     "skew_ms": state.stream_metrics.last_skew_ms,
                     "is_backlog": state.stream_metrics.last_backlog,
+                    "is_outlier": state.stream_metrics.last_outlier,
                 }
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
                 with open(log_path, "a", encoding="utf-8") as handle:

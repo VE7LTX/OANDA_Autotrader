@@ -56,8 +56,11 @@ async def run_capture(args) -> None:
                     "server_time": payload.get("time"),
                     "latency_ms_raw": metrics.last_latency_raw_ms,
                     "latency_ms_clamped": metrics.last_latency_ms,
+                    "effective_ms": metrics.last_effective_ms,
+                    "clock_offset_ms": metrics.clock_offset_ms,
                     "skew_ms": metrics.last_skew_ms,
                     "is_backlog": metrics.last_backlog,
+                    "is_outlier": metrics.last_outlier,
                 }
                 with open(args.output, "a", encoding="utf-8") as handle:
                     handle.write(json.dumps(sample) + "\n")

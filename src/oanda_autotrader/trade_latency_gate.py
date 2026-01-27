@@ -49,6 +49,7 @@ class TradeLatencyGateState:
     consecutive_backlog: int = 0
     consecutive_good: int = 0
     last_raw_ms: float | None = None
+    last_effective_ms: float | None = None
     last_backlog: bool | None = None
     last_outlier: bool | None = None
     last_skew_ms: float | None = None
@@ -64,18 +65,21 @@ class TradeLatencyGate:
         self,
         raw_ms: float | None,
         *,
+        effective_ms: float | None,
         backlog: bool,
         outlier: bool,
         skew_ms: float | None,
     ) -> TradeLatencyGateState:
-        if raw_ms is None:
+        if raw_ms is None and effective_ms is None:
             return self.state
 
         cfg = self.config
         st = self.state
+        sample_ms = effective_ms if effective_ms is not None else raw_ms
 
         st.total_samples += 1
         st.last_raw_ms = raw_ms
+        st.last_effective_ms = effective_ms
         st.last_backlog = backlog
         st.last_outlier = outlier
         st.last_skew_ms = skew_ms
@@ -87,8 +91,8 @@ class TradeLatencyGate:
         if outlier:
             st.outlier_samples += 1
 
-        backlog_hit = backlog or outlier or raw_ms >= cfg.backlog_block_ms
-        good_hit = (not backlog) and (not outlier) and raw_ms < cfg.backlog_warn_ms
+        backlog_hit = backlog or outlier or (sample_ms is not None and sample_ms >= cfg.backlog_block_ms)
+        good_hit = (not backlog) and (not outlier) and (sample_ms is not None and sample_ms < cfg.backlog_warn_ms)
 
         if backlog_hit:
             st.consecutive_backlog += 1
@@ -113,6 +117,8 @@ class TradeLatencyGate:
 
     def should_warn(self) -> bool:
         st = self.state
+        if st.last_effective_ms is not None:
+            return st.last_effective_ms >= self.config.backlog_warn_ms
         return st.last_raw_ms is not None and st.last_raw_ms >= self.config.backlog_warn_ms
 
     def snapshot(self) -> dict:

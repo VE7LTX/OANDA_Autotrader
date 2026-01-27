@@ -44,6 +44,7 @@ def main() -> None:
     else:
         input_path = "data/stream_latency.jsonl" if args.source == "stream" else "data/monitor.jsonl"
     raw_values: list[float] = []
+    effective_values: list[float] = []
     with open(input_path, "r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -99,6 +100,16 @@ def main() -> None:
                 if raw is None:
                     continue
                 raw_values.append(raw)
+                outlier = bool(payload.get("is_outlier")) or raw > 10000 or raw < -250
+                effective = payload.get("effective_ms")
+                if effective is None:
+                    clock_offset = payload.get("clock_offset_ms")
+                    if clock_offset is not None:
+                        effective = max(0.0, raw + float(clock_offset))
+                    else:
+                        effective = max(0.0, raw)
+                if not outlier:
+                    effective_values.append(float(effective))
 
     cfg = TradeLatencyGateConfig(mode=args.mode, instrument=args.instrument)
     pos_raw = [value for value in raw_values if value >= 0]
@@ -110,9 +121,9 @@ def main() -> None:
     top_5_pos_raw = sorted(pos_raw, reverse=True)[:5]
     max_pos_raw = max(pos_raw) if pos_raw else None
     skew_rate = (len(neg_raw) / len(raw_values)) if raw_values else 0.0
-    if len(pos_raw) >= args.min_pos_samples:
+    if len(effective_values) >= args.min_pos_samples:
         warn, block = suggest_thresholds(
-            pos_raw,
+            effective_values,
             warn_min=cfg.warn_ms_min,
             warn_max=cfg.warn_ms_max,
             block_min=cfg.block_ms_min,
@@ -137,9 +148,9 @@ def main() -> None:
         "outlier_count": outlier_count,
         "max_pos_raw": max_pos_raw,
         "top_5_pos_raw": top_5_pos_raw,
-        "p50_ms": _percentile(pos_raw, 0.50),
-        "p95_ms": _percentile(pos_raw, 0.95),
-        "p99_ms": _percentile(pos_raw, 0.99),
+        "p50_ms": _percentile(effective_values, 0.50),
+        "p95_ms": _percentile(effective_values, 0.95),
+        "p99_ms": _percentile(effective_values, 0.99),
         "min_pos_samples": args.min_pos_samples,
         "suggested_warn_ms": cfg.backlog_warn_ms,
         "suggested_block_ms": cfg.backlog_block_ms,

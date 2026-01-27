@@ -111,6 +111,8 @@
 
 Latency handling notes:
 - negative values are treated as clock skew (clamped to 0 in stats)
+- clock_offset_ms is estimated from recent negative samples (median)
+- effective_ms = max(0, raw_ms + clock_offset_ms) is used for p95/mean summaries
 - >2000ms samples are flagged as backlog
 - >10000ms samples are treated as outliers (excluded from p95)
 
@@ -124,7 +126,16 @@ Defaults:
 - outlier_high_ms = 10000
 - min_samples = 60
 
-Profiles are written to:
+Fixed thresholds are loaded from:
+- `config/latency_thresholds/latency_thresholds_<mode>_<instrument>.json`
+
+Override search root with:
+- `OANDA_LATENCY_THRESHOLDS_DIR`
+
+Backward compatibility:
+- if no config file is found, `data/` is checked and defaults are used if missing.
+
+Profiles (calibration outputs) are written to:
 - data/latency_profile_<mode>_<instrument>.json
 
 ## Monitoring Loop

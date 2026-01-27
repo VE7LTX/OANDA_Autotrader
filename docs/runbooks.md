@@ -67,6 +67,14 @@ python scripts/calc_latency_profile.py --source stream --mode live --instrument 
 This writes:
 - `data/latency_profile_live_USD_CAD.json`
 
+Fixed thresholds are loaded from:
+- `config/latency_thresholds/latency_thresholds_<mode>_<instrument>.json`
+
+Verify loaded gate config:
+```bash
+python scripts/print_gate_config.py --mode live --instrument USD_CAD
+```
+
 Detached capture (survives terminal close):
 ```powershell
 scripts\launch_capture.ps1 -Mode live -Instrument USD_CAD -Seconds 600

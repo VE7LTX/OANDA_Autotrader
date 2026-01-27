@@ -46,3 +46,8 @@ still runs separately unless you add an autostart hook for it.
 ## Design contract
 All stages speak JSONL. Latest predictions are written as a single-line
 "latest" file to avoid stale schema poisoning; archives are optional.
+
+## Latency and gating
+- Stream latency summaries use effective_ms (raw + clock offset), not clamped raw.
+- Trade gating thresholds are loaded per mode/instrument from
+  `config/latency_thresholds/` with a data/ fallback.

@@ -34,6 +34,17 @@ If not, the prediction source does not match the candle series.
 This is expected until future candles exist.
 For 5s candles and horizon=12, wait ~60s after the prediction timestamp.
 
+## Stream latency p95 is 0.0
+If stream latency p95 stays at 0.0:
+- Check stream latency samples include effective_ms and clock_offset_ms.
+- Ensure the monitor snapshot uses effective latency (not clamped raw).
+- Verify `data/stream_latency.jsonl` has mode/instrument fields (new schema).
+
+If thresholds are missing:
+- `scripts/print_gate_config.py --mode live --instrument USD_CAD`
+should report source=file. If it reports defaults, check
+`config/latency_thresholds/`.
+
 ## No candle data / price scale is 0-1
 Check candle files are updating:
 ```bash

@@ -108,6 +108,39 @@ Schema:
 - pred_loss (optional)
 - device
 
+## Stream latency samples
+Path:
+- data/stream_latency.jsonl
+
+Schema:
+- ts (ISO)
+- mode (live|practice)
+- instrument (e.g., USD_CAD)
+- received_ts (epoch seconds)
+- server_time (ISO from stream)
+- latency_ms_raw
+- latency_ms_clamped
+- effective_ms
+- clock_offset_ms
+- skew_ms
+- is_backlog
+- is_outlier
+
+## Monitoring snapshots
+Path:
+- data/monitor.jsonl
+
+Schema:
+- ts
+- rest (per-name latency stats)
+- stream (StreamMetrics snapshot)
+- trade_gate (TradeLatencyGate snapshot)
+
+Stream snapshot fields include:
+- latency_last_ms / latency_p95_ms / latency_mean_ms (effective)
+- latency_clamped_last_ms / latency_clamped_p95_ms / latency_clamped_mean_ms
+- latency_effective_last_ms / latency_effective_p95_ms / latency_effective_mean_ms
+
 ## Logs
 - data/dashboard.log (dashboard lifecycle + pygame events)
 - data/prediction_runner.log (prediction subprocess stdout/stderr)

@@ -18,6 +18,11 @@ python scripts/run_checks.py
 python scripts/run_instrument_checks.py
 ```
 
+## Pipeline status (quick health check)
+```bash
+python scripts/pipeline_status.py
+```
+
 ## End-to-end (manual)
 1) Start candle capture:
 ```bash

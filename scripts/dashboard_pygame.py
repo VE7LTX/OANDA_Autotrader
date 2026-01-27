@@ -431,6 +431,9 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
             if state.last_latency_log_ts is None or ts - state.last_latency_log_ts >= log_interval:
                 state.last_latency_log_ts = ts
                 sample = {
+                    "ts": datetime.now(tz=timezone.utc).isoformat(),
+                    "mode": group,
+                    "instrument": instrument,
                     "received_ts": ts,
                     "server_time": payload.get("time"),
                     "latency_ms_raw": state.stream_metrics.last_latency_raw_ms,

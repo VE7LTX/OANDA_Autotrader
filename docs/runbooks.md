@@ -24,6 +24,8 @@ python scripts/run_instrument_checks.py
 python scripts/capture_usd_cad_stream.py
 ```
 
+Note: `practice` is an alias of the `demo` account group for account selection.
+
 2) Build features (if needed):
 ```bash
 python scripts/build_features.py --input-dir data --output data/usd_cad_features.jsonl
@@ -58,11 +60,20 @@ Optional environment overrides:
 
 ## Latency profile calibration (120s)
 ```bash
-python scripts/calc_latency_profile.py --mode live --instrument USD_CAD --since-seconds 120
+python scripts/capture_latency.py --mode live --instrument USD_CAD --seconds 120
+python scripts/calc_latency_profile.py --source stream --mode live --instrument USD_CAD --since-seconds 180 --legacy-ok
 ```
 
 This writes:
 - `data/latency_profile_live_USD_CAD.json`
+
+Detached capture (survives terminal close):
+```powershell
+scripts\launch_capture.ps1 -Mode live -Instrument USD_CAD -Seconds 600
+```
+
+The launcher writes the capture PID to:
+- `data/capture_<mode>_<instrument>.pid`
 ## Detached dashboard (survives terminal close)
 ```powershell
 scripts\launch_dashboard.ps1

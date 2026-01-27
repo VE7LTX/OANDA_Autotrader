@@ -47,6 +47,16 @@ def test_stream_metrics_negative_skew_clamped() -> None:
     assert metrics.last_skew_ms is not None
 
 
+def test_stream_metrics_negative_outlier_clamped() -> None:
+    metrics = StreamMetrics(window_seconds=10)
+    base = datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 1.0)
+    assert metrics.last_latency_ms == 0.0
+    assert metrics.last_skew_ms is not None
+    last_sample = metrics._latency_samples[-1]
+    assert last_sample.outlier is True
+
+
 def test_stream_metrics_backlog_flag() -> None:
     metrics = StreamMetrics(window_seconds=10)
     base = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc).timestamp()

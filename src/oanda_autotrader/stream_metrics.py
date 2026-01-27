@@ -139,10 +139,10 @@ class StreamMetrics:
         skew_ms = None
         backlog = False
         outlier = False
-        if raw_ms < -250.0:
-            outlier = True
-        elif raw_ms < 0.0:
+        if raw_ms < 0.0:
             skew_ms = abs(raw_ms)
+            if raw_ms < -250.0:
+                outlier = True
             raw_ms = 0.0
         if raw_ms > 2000.0:
             backlog = True

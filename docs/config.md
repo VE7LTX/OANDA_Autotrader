@@ -112,3 +112,16 @@ Latency handling notes:
 - negative values are treated as clock skew (clamped to 0 in stats)
 - >2000ms samples are flagged as backlog
 - >10000ms samples are treated as outliers (excluded from p95)
+
+## Trade Latency Gate (execution safety)
+Defaults:
+- skew_outlier_ms = 1000
+- backlog_warn_ms = 1500
+- backlog_block_ms = 500
+- consecutive_backlog_to_block = 3
+- consecutive_good_to_unblock = 10
+- outlier_high_ms = 10000
+- min_samples = 60
+
+Profiles are written to:
+- data/latency_profile_<mode>_<instrument>.json

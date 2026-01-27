@@ -24,6 +24,7 @@ from oanda_autotrader.app import build_stream_client, load_account_client
 from oanda_autotrader.config import load_account_groups, resolve_account_credentials, select_account
 from oanda_autotrader.monitor import measure_account_latency
 from oanda_autotrader.stream_metrics import StreamMetrics
+from oanda_autotrader.trade_latency_gate import TradeLatencyGate, TradeLatencyGateConfig, profile_path
 
 
 def _env(name: str, default: str) -> str:
@@ -94,6 +95,9 @@ class SharedState:
         self.pred_scores: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
         self.last_latency_log_ts: float | None = None
+        self.trade_gate: TradeLatencyGate | None = None
+        self.trade_gate_mode: str | None = None
+        self.trade_gate_instrument: str | None = None
         self.candle_interval = 5
         self.max_candles = 120
         self._bucket_start: float | None = None
@@ -403,6 +407,17 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
             ts = time.time()
             state.update_tick(mid, ts)
             state.stream_metrics.record_latency(payload.get("time"), ts)
+            if state.trade_gate is not None:
+                state.trade_gate.update(
+                    state.stream_metrics.last_latency_raw_ms,
+                    backlog=bool(state.stream_metrics.last_backlog),
+                    outlier=bool(
+                        state.stream_metrics.last_latency_raw_ms is not None
+                        and abs(state.stream_metrics.last_latency_raw_ms)
+                        > state.trade_gate.config.outlier_high_ms
+                    ),
+                    skew_ms=state.stream_metrics.last_skew_ms,
+                )
             log_path = os.getenv("OANDA_STREAM_LATENCY_LOG_PATH", "data/stream_latency.jsonl")
             log_interval = _env_float("OANDA_STREAM_LATENCY_LOG_INTERVAL", 5.0)
             if state.last_latency_log_ts is None or ts - state.last_latency_log_ts >= log_interval:
@@ -418,6 +433,14 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
                 with open(log_path, "a", encoding="utf-8") as handle:
                     handle.write(json.dumps(sample) + "\n")
+                if state.trade_gate is not None:
+                    gate_path = os.getenv(
+                        "OANDA_TRADE_LATENCY_LOG_PATH",
+                        f"data/trade_latency_gate_{group}_{instrument}.jsonl",
+                    )
+                    os.makedirs(os.path.dirname(gate_path), exist_ok=True)
+                    with open(gate_path, "a", encoding="utf-8") as gate_handle:
+                        gate_handle.write(json.dumps(state.trade_gate.snapshot()) + "\n")
 
 
 def draw_graph(screen, values, color, rect):
@@ -578,6 +601,11 @@ def main() -> None:
         daemon=True,
     ).start()
 
+    gate_config = TradeLatencyGateConfig(mode=stream_group, instrument=instrument)
+    state.trade_gate = TradeLatencyGate(gate_config)
+    state.trade_gate_mode = stream_group
+    state.trade_gate_instrument = instrument
+
     loop = asyncio.new_event_loop()
     threading.Thread(
         target=loop.run_until_complete,
@@ -674,8 +702,13 @@ def main() -> None:
             latency_text = f"{metrics.latency_last_ms:.1f}ms"
             if metrics.latency_p95_ms is not None:
                 latency_text = f"{latency_text} p95 {metrics.latency_p95_ms:.1f}ms"
+        trade_gate_text = "--"
+        if state.trade_gate is not None:
+            gate = state.trade_gate.snapshot()
+            status = "BLOCK" if gate.get("blocked") else "OK"
+            trade_gate_text = f"{status} warn:{gate.get('warn')}"
         line3 = font.render(
-            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
+            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             True,
             (200, 200, 200),
         )

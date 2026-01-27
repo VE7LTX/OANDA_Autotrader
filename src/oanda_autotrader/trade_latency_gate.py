@@ -1,0 +1,156 @@
+"""
+Trade latency gating with hysteresis and per-mode profiles.
+
+Purpose:
+- Keep execution safe by blocking trades when stream latency/backlog is high.
+- Separate observability (raw/clamped stats) from execution gating thresholds.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, asdict
+import json
+import os
+from typing import Iterable
+
+
+@dataclass
+class TradeLatencyGateConfig:
+    mode: str
+    instrument: str
+    skew_outlier_ms: float = 1000.0
+    backlog_warn_ms: float = 1500.0
+    backlog_block_ms: float = 500.0
+    consecutive_backlog_to_block: int = 3
+    consecutive_good_to_unblock: int = 10
+    outlier_high_ms: float = 10000.0
+    min_samples: int = 60
+    block_ms_min: float = 250.0
+    block_ms_max: float = 750.0
+    warn_ms_min: float = 800.0
+    warn_ms_max: float = 2500.0
+
+    def clamp(self) -> None:
+        self.backlog_block_ms = min(
+            max(self.backlog_block_ms, self.block_ms_min), self.block_ms_max
+        )
+        self.backlog_warn_ms = min(
+            max(self.backlog_warn_ms, self.warn_ms_min), self.warn_ms_max
+        )
+
+
+@dataclass
+class TradeLatencyGateState:
+    blocked: bool = True
+    total_samples: int = 0
+    backlog_samples: int = 0
+    outlier_samples: int = 0
+    skew_samples: int = 0
+    consecutive_backlog: int = 0
+    consecutive_good: int = 0
+    last_raw_ms: float | None = None
+    last_backlog: bool | None = None
+    last_outlier: bool | None = None
+    last_skew_ms: float | None = None
+
+
+class TradeLatencyGate:
+    def __init__(self, config: TradeLatencyGateConfig) -> None:
+        config.clamp()
+        self.config = config
+        self.state = TradeLatencyGateState(blocked=True)
+
+    def update(
+        self,
+        raw_ms: float | None,
+        *,
+        backlog: bool,
+        outlier: bool,
+        skew_ms: float | None,
+    ) -> TradeLatencyGateState:
+        if raw_ms is None:
+            return self.state
+
+        cfg = self.config
+        st = self.state
+
+        st.total_samples += 1
+        st.last_raw_ms = raw_ms
+        st.last_backlog = backlog
+        st.last_outlier = outlier
+        st.last_skew_ms = skew_ms
+
+        if skew_ms is not None:
+            st.skew_samples += 1
+        if backlog:
+            st.backlog_samples += 1
+        if outlier:
+            st.outlier_samples += 1
+
+        backlog_hit = backlog or outlier or raw_ms >= cfg.backlog_block_ms
+        good_hit = (not backlog) and (not outlier) and raw_ms < cfg.backlog_warn_ms
+
+        if backlog_hit:
+            st.consecutive_backlog += 1
+            st.consecutive_good = 0
+        elif good_hit:
+            st.consecutive_good += 1
+            st.consecutive_backlog = 0
+
+        # Blocking logic with hysteresis and minimum sample requirement.
+        if st.total_samples < cfg.min_samples:
+            st.blocked = True
+        elif st.consecutive_backlog >= cfg.consecutive_backlog_to_block:
+            st.blocked = True
+        elif st.blocked and st.consecutive_good >= cfg.consecutive_good_to_unblock:
+            st.blocked = False
+
+        # Hard block on outlier/backlog when no good streak present.
+        if backlog or outlier:
+            st.blocked = True
+
+        return st
+
+    def should_warn(self) -> bool:
+        st = self.state
+        return st.last_raw_ms is not None and st.last_raw_ms >= self.config.backlog_warn_ms
+
+    def snapshot(self) -> dict:
+        data = {
+            **asdict(self.config),
+            **asdict(self.state),
+            "warn": self.should_warn(),
+        }
+        return data
+
+
+def suggest_thresholds(
+    raw_ms_values: Iterable[float],
+    *,
+    warn_min: float,
+    warn_max: float,
+    block_min: float,
+    block_max: float,
+) -> tuple[float, float]:
+    values = [max(v, 0.0) for v in raw_ms_values if v is not None]
+    if not values:
+        return warn_min, block_min
+    values.sort()
+    p95_index = max(0, int(round(0.95 * (len(values) - 1))))
+    p99_index = max(0, int(round(0.99 * (len(values) - 1))))
+    warn = min(max(values[p95_index], warn_min), warn_max)
+    block = min(max(values[p99_index], block_min), block_max)
+    return warn, block
+
+
+def profile_path(mode: str, instrument: str) -> str:
+    safe = instrument.replace("/", "_")
+    return os.path.join(
+        "data", f"latency_profile_{mode.lower()}_{safe}.json"
+    )
+
+
+def write_profile(path: str, payload: dict) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)

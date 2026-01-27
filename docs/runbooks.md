@@ -56,6 +56,13 @@ Optional environment overrides:
 - OANDA_DASHBOARD_PRED_RETRAIN_INTERVAL=60
 - OANDA_DASHBOARD_SCORE_EVERY=10
 
+## Latency profile calibration (120s)
+```bash
+python scripts/calc_latency_profile.py --mode live --instrument USD_CAD --since-seconds 120
+```
+
+This writes:
+- `data/latency_profile_live_USD_CAD.json`
 ## Detached dashboard (survives terminal close)
 ```powershell
 scripts\launch_dashboard.ps1

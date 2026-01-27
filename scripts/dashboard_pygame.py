@@ -543,7 +543,7 @@ def draw_graph(screen, values, color, rect):
     pygame.draw.lines(screen, color, False, points, 2)
 
 
-def draw_candles(screen, candles, rect, *, min_val: float, max_val: float):
+def draw_candles(screen, candles, rect, *, min_val: float, max_val: float, hit_map: dict | None = None):
     if len(candles) < 2:
         return
     span = max(max_val - min_val, max_val * 0.002, 1e-6)
@@ -564,6 +564,10 @@ def draw_candles(screen, candles, rect, *, min_val: float, max_val: float):
             body_top = mid - (min_body_px // 2)
             body_h = min_body_px
         pygame.draw.rect(screen, color, pygame.Rect(x, body_top, candle_width, body_h))
+        if hit_map is not None and i in hit_map:
+            hit = hit_map[i]
+            outline = (80, 200, 120) if hit else (220, 80, 80)
+            pygame.draw.rect(screen, outline, pygame.Rect(x, body_top, candle_width, body_h), 1)
 
 
 def draw_dashed_line(screen, points, color, dash_length=6):
@@ -898,6 +902,12 @@ def main() -> None:
             (200, 200, 200),
         )
         screen.blit(line5, (padding, padding + line_h * 5))
+        line5b = font.render(
+            "accuracy markers: green=hit red=miss",
+            True,
+            (160, 160, 160),
+        )
+        screen.blit(line5b, (padding, padding + line_h * 5 + 18))
 
         pred_hint = ""
         if pred_status == "PRED: stale":
@@ -911,7 +921,7 @@ def main() -> None:
         )
         screen.blit(line6, (padding, padding + line_h * 6))
 
-        charts_top = padding + line_h * 8 + 10
+        charts_top = padding + line_h * 8 + 24
         chart_h = 180
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
@@ -981,7 +991,18 @@ def main() -> None:
             (200, 200, 200),
         )
         screen.blit(line7, (padding, padding + line_h * 7))
-        draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max)
+        hit_map = {}
+        if scores and candles:
+            results = scores.get("results") or []
+            for item in results:
+                step = item.get("step")
+                hit = item.get("hit")
+                if step is None or hit is None:
+                    continue
+                idx = len(candles) - step
+                if 0 <= idx < len(candles):
+                    hit_map[idx] = bool(hit)
+        draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max, hit_map=hit_map or None)
         draw_axis_labels(
             screen,
             price_rect,

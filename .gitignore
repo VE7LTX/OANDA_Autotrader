@@ -189,6 +189,7 @@ accounts.yml
 
 # Data exports
 data/
+!data/latency_thresholds_*.json
 
 # Local screenshots
 Screenshot *.png

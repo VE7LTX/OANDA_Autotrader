@@ -9,9 +9,10 @@ Purpose:
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
+import hashlib
 import json
 import os
-from typing import Iterable
+from typing import Iterable, Tuple
 
 
 @dataclass
@@ -160,3 +161,33 @@ def write_profile(path: str, payload: dict) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
+
+
+def thresholds_path(mode: str, instrument: str, base_dir: str | None = None) -> str:
+    safe = instrument.replace("/", "_")
+    root = base_dir or "data"
+    return os.path.join(root, f"latency_thresholds_{mode.lower()}_{safe}.json")
+
+
+def load_thresholds(
+    mode: str, instrument: str, *, base_dir: str | None = None
+) -> tuple[TradeLatencyGateConfig, dict]:
+    cfg = TradeLatencyGateConfig(mode=mode, instrument=instrument)
+    path = thresholds_path(mode, instrument, base_dir=base_dir)
+    meta = {"path": path, "source": "defaults", "sha1": None}
+    if not os.path.exists(path):
+        print(f"WARNING: threshold file missing, using defaults: {path}")
+        return cfg, meta
+    with open(path, "r", encoding="utf-8") as handle:
+        content = handle.read()
+    meta["sha1"] = hashlib.sha1(content.encode("utf-8")).hexdigest()
+    data = json.loads(content)
+    for key, value in data.items():
+        if hasattr(cfg, key):
+            setattr(cfg, key, value)
+    # Honor explicit thresholds from file, even if below default mins.
+    cfg.warn_ms_min = 0.0
+    cfg.block_ms_min = 0.0
+    cfg.clamp()
+    meta["source"] = "file"
+    return cfg, meta

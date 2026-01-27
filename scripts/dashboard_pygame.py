@@ -25,7 +25,12 @@ from oanda_autotrader.config import load_account_groups, resolve_account_credent
 from oanda_autotrader.monitor import measure_account_latency
 from oanda_autotrader.monitoring import monitor_loop
 from oanda_autotrader.stream_metrics import StreamMetrics
-from oanda_autotrader.trade_latency_gate import TradeLatencyGate, TradeLatencyGateConfig, profile_path
+from oanda_autotrader.trade_latency_gate import (
+    TradeLatencyGate,
+    TradeLatencyGateConfig,
+    load_thresholds,
+    profile_path,
+)
 
 
 def _env(name: str, default: str) -> str:
@@ -618,7 +623,9 @@ def main() -> None:
         daemon=True,
     ).start()
 
-    gate_config = TradeLatencyGateConfig(mode=stream_group, instrument=instrument)
+    thresholds_dir = os.getenv("OANDA_LATENCY_THRESHOLDS_DIR", "data")
+    gate_config, gate_meta = load_thresholds(stream_group, instrument, base_dir=thresholds_dir)
+    _log_dashboard_json("trade_gate_thresholds", gate_meta)
     state.trade_gate = TradeLatencyGate(gate_config)
     state.trade_gate_mode = stream_group
     state.trade_gate_instrument = instrument

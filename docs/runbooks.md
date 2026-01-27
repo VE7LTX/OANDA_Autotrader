@@ -61,6 +61,9 @@ python scripts/build_features.py --input-dir data --output data/usd_cad_features
 ```bash
 python scripts/train_autoencoder_loop.py --features data/usd_cad_features.jsonl --retrain-interval 60 --epochs 1 --horizon 12 --interval-secs 5
 ```
+Notes:
+- The trainer uses a retrain gate based on `data/prediction_scores.jsonl`.
+- Use `--force-retrain` to bypass the gate for manual testing.
 
 4) Start scoring:
 ```bash
@@ -83,6 +86,17 @@ Optional environment overrides:
 - OANDA_DASHBOARD_PRED_FEATURES=data/usd_cad_features.jsonl
 - OANDA_DASHBOARD_PRED_RETRAIN_INTERVAL=60
 - OANDA_DASHBOARD_SCORE_EVERY=10
+
+## Retrain gate (decision check)
+Print the retrain gate decision without training:
+```bash
+python scripts/retrain_gate_check.py
+```
+
+Force a training cycle regardless of gate:
+```bash
+python scripts/train_autoencoder_loop.py --once --epochs 1 --force-retrain
+```
 
 ## Latency profile calibration (120s)
 ```bash
@@ -113,6 +127,7 @@ scripts\launch_capture.ps1 -Mode live -Instrument USD_CAD -Seconds 600
 
 The launcher writes the capture PID to:
 - `data/capture_<mode>_<instrument>.pid`
+
 ## Detached dashboard (survives terminal close)
 ```powershell
 scripts\launch_dashboard.ps1

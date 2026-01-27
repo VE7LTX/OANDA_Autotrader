@@ -34,6 +34,17 @@ If not, the prediction source does not match the candle series.
 This is expected until future candles exist.
 For 5s candles and horizon=12, wait ~60s after the prediction timestamp.
 
+## Trainer keeps skipping retrain
+The retrain gate will skip if the pipeline is stale or the trade gate is blocked.
+Check the decision without training:
+```bash
+python scripts/retrain_gate_check.py
+```
+If you need to force a run:
+```bash
+python scripts/train_autoencoder_loop.py --once --epochs 1 --force-retrain
+```
+
 ## Stream latency p95 is 0.0
 If stream latency p95 stays at 0.0:
 - Check stream latency samples include effective_ms and clock_offset_ms.

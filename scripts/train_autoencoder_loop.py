@@ -156,7 +156,9 @@ def main() -> None:
 
     device = torch.device("cuda" if args.use_cuda and torch.cuda.is_available() else "cpu")
 
+    cycle = 0
     while True:
+        cycle += 1
         matrix, closes, returns = load_matrix(args.features)
         if matrix.size == 0 or len(closes) < (args.horizon + 1):
             time.sleep(args.retrain_interval)
@@ -270,6 +272,7 @@ def main() -> None:
 
             status = {
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "cycle": cycle,
                 "epoch": epoch,
                 "loss": round(epoch_loss / steps, 6),
                 "val_loss": round(val_loss, 6),

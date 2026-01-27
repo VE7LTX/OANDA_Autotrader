@@ -639,6 +639,20 @@ def draw_axis_labels(
         screen.blit(right_label, (rect.right - right_label.get_width() - inset, rect.bottom - 20))
 
 
+def draw_text_clamped(screen, font, text, x, y, max_width, color=(200, 200, 200)):
+    if max_width <= 0:
+        return
+    rendered = font.render(text, True, color)
+    if rendered.get_width() <= max_width:
+        screen.blit(rendered, (x, y))
+        return
+    truncated = text
+    while truncated and rendered.get_width() > max_width:
+        truncated = truncated[:-1]
+        rendered = font.render(truncated + "…", True, color)
+    screen.blit(rendered, (x, y))
+
+
 def main() -> None:
     interval = _env_int("OANDA_DASHBOARD_LATENCY_INTERVAL", 5)
     max_points = _env_int("OANDA_DASHBOARD_HISTORY", 120)
@@ -813,14 +827,17 @@ def main() -> None:
         )
         screen.blit(line1, (padding, padding + line_h))
 
-        line2 = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"Latency live: {live:.2f} ms | practice: {practice:.2f} ms"
             if practice is not None and live is not None
             else "Latency live: -- | practice: --",
-            True,
+            padding,
+            padding + line_h * 2,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(line2, (padding, padding + line_h * 2))
 
         uptime_seconds = int(time.time() - start_ts)
         uptime_label = f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}"
@@ -852,19 +869,25 @@ def main() -> None:
             gate = state.trade_gate.snapshot()
             status = "BLOCK" if gate.get("blocked") else "OK"
             trade_gate_text = f"{status} warn:{gate.get('warn')}"
-        line3 = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  last_ok: {success_age}  reconnects: {reconnects}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
-            True,
+            padding,
+            padding + line_h * 3,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(line3, (padding, padding + line_h * 3))
 
-        line4 = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"P&L: {pl_text}  balance: {bal_text}  errors: {metrics.errors}  last_error: {last_err}",
-            True,
+            padding,
+            padding + line_h * 4,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(line4, (padding, padding + line_h * 4))
 
         pred_status = "PRED: --"
         pred_ts_label = "--"
@@ -896,30 +919,39 @@ def main() -> None:
 
         candle_status = "OK" if candle_file_age is not None and candle_file_age <= candles_fresh_s else "STALE"
         candle_age_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
-        line5 = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"candles {candle_status} age={candle_age_label}",
-            True,
+            padding,
+            padding + line_h * 5,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(line5, (padding, padding + line_h * 5))
-        line5b = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             "accuracy markers: green=hit red=miss",
-            True,
+            padding,
+            padding + line_h * 5 + 18,
+            screen.get_width() - padding * 2,
             (160, 160, 160),
         )
-        screen.blit(line5b, (padding, padding + line_h * 5 + 18))
 
         pred_hint = ""
         if pred_status == "PRED: stale":
             pred_hint = "hint=prediction job not running / stuck"
         elif pred_status == "PRED: --":
             pred_hint = "hint=prediction file missing"
-        line6 = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status} {pred_hint}",
-            True,
+            padding,
+            padding + line_h * 6,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(line6, (padding, padding + line_h * 6))
 
         charts_top = padding + line_h * 8 + 24
         chart_h = 180
@@ -1145,16 +1177,21 @@ def main() -> None:
                 color = (80, 200, 120) if hit else (220, 80, 80)
                 pygame.draw.circle(screen, color, (x + 2, y - 6), 3)
 
-        price_label = font.render(
+        draw_text_clamped(
+            screen,
+            font,
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",
-            True,
+            padding,
+            price_rect.bottom + 6,
+            screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        screen.blit(price_label, (padding, price_rect.bottom + 6))
 
         ae_text = "--"
         if ae_status:
             parts = []
+            if "cycle" in ae_status:
+                parts.append(f"cycle {ae_status['cycle']}")
             if "epoch" in ae_status:
                 parts.append(f"epoch {ae_status['epoch']}")
             if "loss" in ae_status:
@@ -1164,8 +1201,15 @@ def main() -> None:
             if "ts" in ae_status:
                 parts.append(f"ts {ae_status['ts']}")
             ae_text = " | ".join(parts) if parts else "--"
-        ae_label = font.render(f"AE status: {ae_text}", True, (200, 200, 200))
-        screen.blit(ae_label, (padding, price_rect.bottom + 32))
+        draw_text_clamped(
+            screen,
+            font,
+            f"AE status: {ae_text}",
+            padding,
+            price_rect.bottom + 32,
+            screen.get_width() - padding * 2,
+            (200, 200, 200),
+        )
 
         pygame.display.flip()
         clock.tick(30)

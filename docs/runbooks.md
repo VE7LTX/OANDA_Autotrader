@@ -23,6 +23,21 @@ python scripts/run_instrument_checks.py
 python scripts/pipeline_status.py
 ```
 
+JSON output:
+```bash
+python scripts/pipeline_status.py --json
+```
+
+Exit codes:
+- 0 = all OK
+- 2 = one or more STALE
+- 1 = unexpected error
+
+## Candle capture
+```powershell
+scripts\\launch_capture.ps1
+```
+
 ## End-to-end (manual)
 1) Start candle capture:
 ```bash

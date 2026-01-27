@@ -18,6 +18,7 @@ def parse_args():
     parser.add_argument("--fresh-score-s", type=float, default=300.0)
     parser.add_argument("--fresh-candle-s", type=float, default=120.0)
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--warn-seconds", type=float, default=120.0)
     return parser.parse_args()
 
 
@@ -80,14 +81,17 @@ def main() -> None:
     pred_path = args.pred_path
     scores_path = args.scores_path
 
-    monitor_mtime = os.path.getmtime(monitor_path) if os.path.exists(monitor_path) else None
+    monitor_exists = os.path.exists(monitor_path)
+    monitor_mtime = os.path.getmtime(monitor_path) if monitor_exists else None
     monitor_age = _age_seconds(monitor_mtime, now)
 
-    pred_line = _last_json_line(pred_path)
+    pred_exists = os.path.exists(pred_path)
+    pred_line = _last_json_line(pred_path) if pred_exists else None
     pred_ts = _parse_iso(pred_line.get("ts")) if pred_line else None
     pred_age = _age_seconds(pred_ts, now)
 
-    score_line = _last_json_line(scores_path)
+    scores_exists = os.path.exists(scores_path)
+    score_line = _last_json_line(scores_path) if scores_exists else None
     score_ts = None
     if score_line:
         score_ts = _parse_iso(score_line.get("scored_ts") or score_line.get("ts"))
@@ -103,51 +107,118 @@ def main() -> None:
     candle_ts = _parse_iso(candle_line.get("time")) if candle_line else None
     candle_age = _age_seconds(candle_ts, now)
 
+    warn_limit = args.warn_seconds
+    monitor_limit = warn_limit if warn_limit is not None else args.fresh_monitor_s
+    pred_limit = warn_limit if warn_limit is not None else args.fresh_pred_s
+    score_limit = warn_limit if warn_limit is not None else args.fresh_score_s
+    candle_limit = warn_limit if warn_limit is not None else args.fresh_candle_s
+
+    def reason_and_hint(exists: bool, age: float | None, limit: float, missing_hint: str, stale_hint: str):
+        if not exists:
+            return "missing", missing_hint
+        if age is None:
+            return "missing", missing_hint
+        if age > limit:
+            return "stale", stale_hint
+        return "ok", None
+
+    monitor_reason, monitor_hint = reason_and_hint(
+        monitor_exists,
+        monitor_age,
+        monitor_limit,
+        "monitor loop not running",
+        "monitor loop not running",
+    )
+    pred_reason, pred_hint = reason_and_hint(
+        pred_exists,
+        pred_age,
+        pred_limit,
+        "prediction file missing",
+        "prediction job not running / stuck",
+    )
+    score_reason, score_hint = reason_and_hint(
+        scores_exists,
+        score_age,
+        score_limit,
+        "scores file missing",
+        "scoring job not running / waiting on horizon",
+    )
+    candle_reason, candle_hint = reason_and_hint(
+        candle_file is not None,
+        candle_age,
+        candle_limit,
+        "candle file not found, capture likely not started",
+        "run scripts/launch_capture.ps1 (or capture script)",
+    )
+
     payload = {
         "ts": datetime.now(tz=timezone.utc).isoformat(),
         "monitor": {
             "path": monitor_path,
-            "exists": os.path.exists(monitor_path),
+            "exists": monitor_exists,
             "age_s": monitor_age,
-            "fresh": _fresh(monitor_age, args.fresh_monitor_s),
+            "fresh": _fresh(monitor_age, monitor_limit),
+            "status": "OK" if _fresh(monitor_age, monitor_limit) else "STALE",
+            "reason": monitor_reason,
+            "hint": monitor_hint,
         },
         "predictions": {
             "path": pred_path,
-            "exists": os.path.exists(pred_path),
+            "exists": pred_exists,
             "ts": pred_line.get("ts") if pred_line else None,
             "age_s": pred_age,
-            "fresh": _fresh(pred_age, args.fresh_pred_s),
+            "fresh": _fresh(pred_age, pred_limit),
+            "status": "OK" if _fresh(pred_age, pred_limit) else "STALE",
+            "reason": pred_reason,
+            "hint": pred_hint,
         },
         "scores": {
             "path": scores_path,
-            "exists": os.path.exists(scores_path),
+            "exists": scores_exists,
             "ts": score_line.get("scored_ts") if score_line else None,
             "age_s": score_age,
-            "fresh": _fresh(score_age, args.fresh_score_s),
+            "fresh": _fresh(score_age, score_limit),
+            "status": "OK" if _fresh(score_age, score_limit) else "STALE",
+            "reason": score_reason,
+            "hint": score_hint,
         },
         "candles": {
             "file": str(candle_file) if candle_file else None,
             "ts": candle_line.get("time") if candle_line else None,
             "age_s": candle_age,
-            "fresh": _fresh(candle_age, args.fresh_candle_s),
+            "fresh": _fresh(candle_age, candle_limit),
+            "status": "OK" if _fresh(candle_age, candle_limit) else "STALE",
+            "reason": candle_reason,
+            "hint": candle_hint,
         },
     }
 
+    overall_ok = all(
+        item.get("fresh") for item in payload.values() if isinstance(item, dict)
+    )
+
     if args.json:
         print(json.dumps(payload, indent=2))
-        return
+        raise SystemExit(0 if overall_ok else 2)
 
     def line(label: str, info: dict) -> str:
         status = "OK" if info.get("fresh") else "STALE"
         age = info.get("age_s")
         age_label = f"{age:.1f}s" if age is not None else "--"
-        return f"{label:<12} {status:<6} age={age_label}"
+        hint = info.get("hint")
+        hint_text = f"  hint={hint}" if hint else ""
+        return f"{label:<12} {status:<6} age={age_label}{hint_text}"
 
     print(line("monitor", payload["monitor"]))
     print(line("predictions", payload["predictions"]))
     print(line("scores", payload["scores"]))
     print(line("candles", payload["candles"]))
 
+    raise SystemExit(0 if overall_ok else 2)
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        raise SystemExit(1)

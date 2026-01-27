@@ -77,6 +77,46 @@ def _fmt_float(value: float | None, precision: int = 5) -> str:
     return f"{value:.{precision}f}"
 
 
+def _last_json_line(path: str) -> dict | None:
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            if size == 0:
+                return None
+            chunk = min(size, 65536)
+            handle.seek(-chunk, os.SEEK_END)
+            data = handle.read().decode("utf-8", errors="ignore")
+        lines = [line for line in data.splitlines() if line.strip()]
+        if not lines:
+            return None
+        return json.loads(lines[-1])
+    except Exception:
+        return None
+
+
+def _candle_file_age(candles_dir: str, pattern: str) -> tuple[float | None, str | None]:
+    path = None
+    try:
+        files = sorted(
+            Path(candles_dir).glob(f"{pattern}*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+        )
+        if not files:
+            return None, None
+        path = str(files[-1])
+        line = _last_json_line(path)
+        ts = _parse_timestamp(line.get("time")) if line else None
+        if not ts:
+            return None, path
+        age = max(0.0, time.time() - ts.timestamp())
+        return age, path
+    except Exception:
+        return None, path
+
+
 class SharedState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -588,6 +628,9 @@ def main() -> None:
     scores_interval = _env_int("OANDA_DASHBOARD_SCORE_INTERVAL", 5)
     monitor_interval = _env_float("OANDA_MONITOR_INTERVAL_SECONDS", 15.0)
     monitor_path = _env("OANDA_MONITOR_PATH", "data/monitor.jsonl")
+    candles_dir = _env("OANDA_DASHBOARD_CANDLES_DIR", "data")
+    candles_pattern = _env("OANDA_DASHBOARD_CANDLES_PATTERN", "usd_cad_candles_")
+    candles_fresh_s = _env_float("OANDA_DASHBOARD_CANDLES_FRESH_S", 120.0)
 
     state = SharedState()
     start_ts = time.time()
@@ -659,6 +702,9 @@ def main() -> None:
     ignore_quit = _env_bool("OANDA_DASHBOARD_IGNORE_QUIT", False)
     last_tick_log = time.time()
     processes = start_dashboard_processes()
+    last_candle_check = 0.0
+    candle_file_age = None
+    candle_file_path = None
     while running:
         for event in pygame.event.get():
             if time.time() < event_log_until:
@@ -693,6 +739,10 @@ def main() -> None:
             preds = state.predictions
             recon = state.recon
             scores = state.pred_scores
+
+        if time.time() - last_candle_check >= 5.0:
+            last_candle_check = time.time()
+            candle_file_age, candle_file_path = _candle_file_age(candles_dir, candles_pattern)
 
         padding = 20
         line_h = 26
@@ -787,14 +837,23 @@ def main() -> None:
                 pred_low = min(item.get("low") for item in horizon if item.get("low") is not None)
                 pred_high = max(item.get("high") for item in horizon if item.get("high") is not None)
 
+        candle_status = "OK" if candle_file_age is not None and candle_file_age <= candles_fresh_s else "STALE"
+        candle_age_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
         line5 = font.render(
-            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+            f"candles {candle_status} age={candle_age_label}",
             True,
             (200, 200, 200),
         )
         screen.blit(line5, (padding, padding + line_h * 5))
 
-        charts_top = padding + line_h * 7 + 10
+        line6 = font.render(
+            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+            True,
+            (200, 200, 200),
+        )
+        screen.blit(line6, (padding, padding + line_h * 6))
+
+        charts_top = padding + line_h * 8 + 10
         chart_h = 180
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
@@ -827,12 +886,12 @@ def main() -> None:
                     pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
                     pred_points = mean_vals if pred_in_view else []
 
-        line6 = font.render(
+        line7 = font.render(
             f"pred_low/high: {_fmt_float(pred_low)} / {_fmt_float(pred_high)}  price_min/max: {_fmt_float(price_min)} / {_fmt_float(price_max)}",
             True,
             (200, 200, 200),
         )
-        screen.blit(line6, (padding, padding + line_h * 6))
+        screen.blit(line7, (padding, padding + line_h * 7))
         draw_candles(screen, candles, price_rect, min_val=price_min, max_val=price_max)
         draw_axis_labels(
             screen,

@@ -66,6 +66,9 @@ Options:
 - `-IgnoreQuit` (ignore QUIT events for debugging)
 - `-WorkingDir` (override repo root)
 
+The launcher writes the dashboard PID to:
+- `data/dashboard.pid`
+
 ## Scoring delay note
 Scoring is delayed by definition. For 5s candles and horizon=12, you need
 ~60s of future candles before coverage/MAE resolve.

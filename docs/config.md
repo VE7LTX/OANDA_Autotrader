@@ -103,3 +103,7 @@
 - `OANDA_DASHBOARD_PRED_LOG` (default: data/prediction_runner.log)
 - `OANDA_DASHBOARD_SCORE_EVERY` (default: 10)
 - `OANDA_DASHBOARD_SCORE_LOG` (default: data/score_runner.log)
+
+## Stream Latency Logging
+- `OANDA_STREAM_LATENCY_LOG_PATH` (default: data/stream_latency.jsonl)
+- `OANDA_STREAM_LATENCY_LOG_INTERVAL` (default: 5.0)

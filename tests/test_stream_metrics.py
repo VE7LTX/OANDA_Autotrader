@@ -17,3 +17,12 @@ def test_stream_metrics_errors_and_reconnects() -> None:
     assert snapshot.errors == 1
     assert snapshot.reconnect_waits == 1
     assert snapshot.last_error == "boom"
+
+
+def test_stream_metrics_latency_parsing() -> None:
+    metrics = StreamMetrics(window_seconds=10)
+    metrics.record_latency("2026-01-01T00:00:00.123456789Z", 10.0)
+    last, p95, mean = metrics.latency_stats()
+    assert last is not None
+    assert p95 is not None
+    assert mean is not None

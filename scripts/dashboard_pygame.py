@@ -93,6 +93,7 @@ class SharedState:
         self.recon_k: float = 1.5
         self.pred_scores: dict | None = None
         self.stream_metrics = StreamMetrics(window_seconds=10)
+        self.last_latency_log_ts: float | None = None
         self.candle_interval = 5
         self.max_candles = 120
         self._bucket_start: float | None = None
@@ -383,7 +384,7 @@ def scores_loop(state: SharedState, interval: int, path: str) -> None:
         state.update_scores(scores)
         time.sleep(interval)
 
-async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
+    async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
     config = resolve_account_credentials(group_obj, entry)
@@ -401,6 +402,19 @@ async def stream_loop(state: SharedState, group: str, account: str, instrument: 
             mid = (bid + ask) / 2.0
             ts = time.time()
             state.update_tick(mid, ts)
+            state.stream_metrics.record_latency(payload.get("time"), ts)
+            log_path = os.getenv("OANDA_STREAM_LATENCY_LOG_PATH", "data/stream_latency.jsonl")
+            log_interval = _env_float("OANDA_STREAM_LATENCY_LOG_INTERVAL", 5.0)
+            if state.last_latency_log_ts is None or ts - state.last_latency_log_ts >= log_interval:
+                state.last_latency_log_ts = ts
+                sample = {
+                    "received_ts": ts,
+                    "server_time": payload.get("time"),
+                    "latency_ms": state.stream_metrics.last_latency_ms,
+                }
+                os.makedirs(os.path.dirname(log_path), exist_ok=True)
+                with open(log_path, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(sample) + "\n")
 
 
 def draw_graph(screen, values, color, rect):
@@ -652,8 +666,13 @@ def main() -> None:
                 coverage = f"{scores['coverage'] * 100:.1f}%"
             if scores.get("mae") is not None:
                 mae = f"{scores['mae']:.6f}"
+        latency_text = "--"
+        if metrics.latency_last_ms is not None:
+            latency_text = f"{metrics.latency_last_ms:.1f}ms"
+            if metrics.latency_p95_ms is not None:
+                latency_text = f"{latency_text} p95 {metrics.latency_p95_ms:.1f}ms"
         line3 = font.render(
-            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
+            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             True,
             (200, 200, 200),
         )

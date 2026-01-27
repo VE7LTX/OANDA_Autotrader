@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import time
 
 
@@ -23,6 +24,19 @@ class StreamMetricsSnapshot:
     last_message_ts: float | None
     last_error_ts: float | None
     last_reconnect_ts: float | None
+    latency_last_ms: float | None
+    latency_p95_ms: float | None
+    latency_mean_ms: float | None
+
+
+@dataclass
+class StreamLatencySample:
+    """
+    Single stream latency sample (ms).
+    """
+
+    milliseconds: float
+    timestamp: float
 
 
 class StreamMetrics:
@@ -33,6 +47,7 @@ class StreamMetrics:
     def __init__(self, *, window_seconds: int = 10) -> None:
         self._window_seconds = window_seconds
         self._message_ts: deque[float] = deque()
+        self._latency_samples: deque[StreamLatencySample] = deque()
         self.messages_total = 0
         self.reconnect_waits = 0
         self.errors = 0
@@ -40,6 +55,7 @@ class StreamMetrics:
         self.last_message_ts: float | None = None
         self.last_error_ts: float | None = None
         self.last_reconnect_ts: float | None = None
+        self.last_latency_ms: float | None = None
 
     def on_event(self, event: dict) -> None:
         event_type = event.get("event")
@@ -63,13 +79,52 @@ class StreamMetrics:
         window_start = now - self._window_seconds
         while self._message_ts and self._message_ts[0] < window_start:
             self._message_ts.popleft()
+        while self._latency_samples and self._latency_samples[0].timestamp < window_start:
+            self._latency_samples.popleft()
 
     def messages_per_second(self) -> float:
         now = time.time()
         self._trim(now)
         return len(self._message_ts) / max(self._window_seconds, 1)
 
+    def record_latency(self, server_time: str | None, received_ts: float) -> None:
+        if not server_time:
+            return
+        server_ts = self._parse_timestamp(server_time)
+        if server_ts is None:
+            return
+        latency_ms = (received_ts - server_ts) * 1000.0
+        self.last_latency_ms = latency_ms
+        self._latency_samples.append(
+            StreamLatencySample(milliseconds=latency_ms, timestamp=received_ts)
+        )
+        self._trim(received_ts)
+
+    def latency_stats(self) -> tuple[float | None, float | None, float | None]:
+        if not self._latency_samples:
+            return None, None, None
+        values = sorted(sample.milliseconds for sample in self._latency_samples)
+        mean = sum(values) / len(values)
+        p95_index = max(0, int(round(0.95 * (len(values) - 1))))
+        return self.last_latency_ms, values[p95_index], mean
+
+    @staticmethod
+    def _parse_timestamp(value: str) -> float | None:
+        raw = value.strip()
+        if raw.endswith("Z"):
+            raw = raw[:-1]
+        if "." in raw:
+            head, frac = raw.split(".", 1)
+            frac = frac[:6].ljust(6, "0")
+            raw = f"{head}.{frac}"
+        try:
+            dt = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
+            return dt.timestamp()
+        except ValueError:
+            return None
+
     def snapshot(self) -> StreamMetricsSnapshot:
+        latency_last, latency_p95, latency_mean = self.latency_stats()
         return StreamMetricsSnapshot(
             messages_total=self.messages_total,
             messages_per_sec=self.messages_per_second(),
@@ -79,4 +134,7 @@ class StreamMetrics:
             last_message_ts=self.last_message_ts,
             last_error_ts=self.last_error_ts,
             last_reconnect_ts=self.last_reconnect_ts,
+            latency_last_ms=latency_last,
+            latency_p95_ms=latency_p95,
+            latency_mean_ms=latency_mean,
         )

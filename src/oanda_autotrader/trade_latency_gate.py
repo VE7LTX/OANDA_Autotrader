@@ -31,6 +31,10 @@ class TradeLatencyGateConfig:
     warn_ms_min: float = 800.0
     warn_ms_max: float = 2500.0
     effective_window_size: int = 120
+    warn_p95_hyst_on_ms: float = 25.0
+    warn_p95_hyst_off_ms: float = 50.0
+    consecutive_p95_to_warn: int = 2
+    consecutive_p95_to_clear: int = 3
 
     def clamp(self) -> None:
         self.backlog_block_ms = min(
@@ -63,6 +67,9 @@ class TradeLatencyGate:
         self.config = config
         self.state = TradeLatencyGateState(blocked=True)
         self._effective_samples: list[float] = []
+        self._p95_warn_streak = 0
+        self._p95_clear_streak = 0
+        self._warn_p95_latched = False
 
     def update(
         self,
@@ -140,11 +147,22 @@ class TradeLatencyGate:
     def snapshot(self) -> dict:
         eff_p95, eff_mean = self.effective_stats()
         warn_last = self.should_warn()
-        warn_p95 = (
-            self.state.total_samples >= self.config.min_samples
-            and eff_p95 is not None
-            and eff_p95 >= self.config.backlog_warn_ms
-        )
+        on_threshold = self.config.backlog_warn_ms + self.config.warn_p95_hyst_on_ms
+        off_threshold = max(0.0, self.config.backlog_warn_ms - self.config.warn_p95_hyst_off_ms)
+        if self.state.total_samples >= self.config.min_samples and eff_p95 is not None:
+            if eff_p95 >= on_threshold:
+                self._p95_warn_streak += 1
+                self._p95_clear_streak = 0
+            elif eff_p95 <= off_threshold:
+                self._p95_clear_streak += 1
+                self._p95_warn_streak = 0
+        if not self._warn_p95_latched and self._p95_warn_streak >= self.config.consecutive_p95_to_warn:
+            self._warn_p95_latched = True
+            self._p95_warn_streak = 0
+        if self._warn_p95_latched and self._p95_clear_streak >= self.config.consecutive_p95_to_clear:
+            self._warn_p95_latched = False
+            self._p95_clear_streak = 0
+        warn_p95 = self._warn_p95_latched
         data = {
             **asdict(self.config),
             **asdict(self.state),
@@ -153,6 +171,10 @@ class TradeLatencyGate:
             "warn_p95": warn_p95,
             "effective_p95_ms": eff_p95,
             "effective_mean_ms": eff_mean,
+            "warn_p95_on_ms": on_threshold,
+            "warn_p95_off_ms": off_threshold,
+            "p95_warn_streak": self._p95_warn_streak,
+            "p95_clear_streak": self._p95_clear_streak,
         }
         return data
 

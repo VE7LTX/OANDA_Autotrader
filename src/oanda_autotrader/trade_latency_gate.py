@@ -59,6 +59,13 @@ class TradeLatencyGateState:
     last_backlog: bool | None = None
     last_outlier: bool | None = None
     last_skew_ms: float | None = None
+    last_effective_p95_ms: float | None = None
+    last_effective_mean_ms: float | None = None
+    warn_p95_on_ms: float | None = None
+    warn_p95_off_ms: float | None = None
+    p95_warn_streak: int = 0
+    p95_clear_streak: int = 0
+    warn_p95_latched: bool = False
 
 
 class TradeLatencyGate:
@@ -67,9 +74,6 @@ class TradeLatencyGate:
         self.config = config
         self.state = TradeLatencyGateState(blocked=True)
         self._effective_samples: list[float] = []
-        self._p95_warn_streak = 0
-        self._p95_clear_streak = 0
-        self._warn_p95_latched = False
 
     def update(
         self,
@@ -105,6 +109,27 @@ class TradeLatencyGate:
             self._effective_samples.append(effective_ms)
             if len(self._effective_samples) > self.config.effective_window_size:
                 self._effective_samples = self._effective_samples[-self.config.effective_window_size :]
+            eff_p95, eff_mean = self.effective_stats()
+            st.last_effective_p95_ms = eff_p95
+            st.last_effective_mean_ms = eff_mean
+            on_threshold = self.config.backlog_warn_ms + self.config.warn_p95_hyst_on_ms
+            off_threshold = max(0.0, self.config.backlog_warn_ms - self.config.warn_p95_hyst_off_ms)
+            st.warn_p95_on_ms = on_threshold
+            st.warn_p95_off_ms = off_threshold
+            if st.total_samples >= self.config.min_samples and eff_p95 is not None:
+                if eff_p95 >= on_threshold:
+                    st.p95_warn_streak += 1
+                    st.p95_clear_streak = 0
+                elif eff_p95 <= off_threshold:
+                    st.p95_clear_streak += 1
+                    st.p95_warn_streak = 0
+                # within band: keep streaks as-is
+            if not st.warn_p95_latched and st.p95_warn_streak >= self.config.consecutive_p95_to_warn:
+                st.warn_p95_latched = True
+                st.p95_warn_streak = 0
+            if st.warn_p95_latched and st.p95_clear_streak >= self.config.consecutive_p95_to_clear:
+                st.warn_p95_latched = False
+                st.p95_clear_streak = 0
 
         backlog_hit = backlog or outlier or (sample_ms is not None and sample_ms >= cfg.backlog_block_ms)
         good_hit = (not backlog) and (not outlier) and (sample_ms is not None and sample_ms < cfg.backlog_warn_ms)
@@ -145,24 +170,8 @@ class TradeLatencyGate:
         return values[p95_index], mean
 
     def snapshot(self) -> dict:
-        eff_p95, eff_mean = self.effective_stats()
         warn_last = self.should_warn()
-        on_threshold = self.config.backlog_warn_ms + self.config.warn_p95_hyst_on_ms
-        off_threshold = max(0.0, self.config.backlog_warn_ms - self.config.warn_p95_hyst_off_ms)
-        if self.state.total_samples >= self.config.min_samples and eff_p95 is not None:
-            if eff_p95 >= on_threshold:
-                self._p95_warn_streak += 1
-                self._p95_clear_streak = 0
-            elif eff_p95 <= off_threshold:
-                self._p95_clear_streak += 1
-                self._p95_warn_streak = 0
-        if not self._warn_p95_latched and self._p95_warn_streak >= self.config.consecutive_p95_to_warn:
-            self._warn_p95_latched = True
-            self._p95_warn_streak = 0
-        if self._warn_p95_latched and self._p95_clear_streak >= self.config.consecutive_p95_to_clear:
-            self._warn_p95_latched = False
-            self._p95_clear_streak = 0
-        warn_p95 = self._warn_p95_latched
+        warn_p95 = self.state.warn_p95_latched
         warn_aggregate = warn_last or warn_p95
         data = {
             **asdict(self.config),
@@ -170,12 +179,12 @@ class TradeLatencyGate:
             "warn": warn_aggregate,
             "warn_last": warn_last,
             "warn_p95": warn_p95,
-            "effective_p95_ms": eff_p95,
-            "effective_mean_ms": eff_mean,
-            "warn_p95_on_ms": on_threshold,
-            "warn_p95_off_ms": off_threshold,
-            "p95_warn_streak": self._p95_warn_streak,
-            "p95_clear_streak": self._p95_clear_streak,
+            "effective_p95_ms": self.state.last_effective_p95_ms,
+            "effective_mean_ms": self.state.last_effective_mean_ms,
+            "warn_p95_on_ms": self.state.warn_p95_on_ms,
+            "warn_p95_off_ms": self.state.warn_p95_off_ms,
+            "p95_warn_streak": self.state.p95_warn_streak,
+            "p95_clear_streak": self.state.p95_clear_streak,
         }
         return data
 

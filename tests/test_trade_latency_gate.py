@@ -70,7 +70,7 @@ def test_warn_p95_hysteresis_no_chatter() -> None:
     gate = TradeLatencyGate(cfg)
     # p95 within hysteresis band should not trigger.
     for p95 in [205, 210, 203, 212]:
-        gate._effective_samples = [p95]
+        gate.update(-100.0, effective_ms=p95, backlog=False, outlier=False, skew_ms=100.0)
         snap = gate.snapshot()
         assert snap["warn_p95"] is False
 
@@ -83,10 +83,10 @@ def test_warn_p95_turn_on_after_streak() -> None:
     cfg.warn_p95_hyst_on_ms = 25
     cfg.warn_p95_hyst_off_ms = 50
     cfg.consecutive_p95_to_warn = 2
+    cfg.effective_window_size = 1
     gate = TradeLatencyGate(cfg)
     for p95 in [230, 240]:
-        gate._effective_samples = [p95]
-        gate.state.total_samples += 1
+        gate.update(-100.0, effective_ms=p95, backlog=False, outlier=False, skew_ms=100.0)
         snap = gate.snapshot()
     assert snap["warn_p95"] is True
 
@@ -100,18 +100,16 @@ def test_warn_p95_turn_off_after_clear_streak() -> None:
     cfg.warn_p95_hyst_off_ms = 50
     cfg.consecutive_p95_to_warn = 2
     cfg.consecutive_p95_to_clear = 3
+    cfg.effective_window_size = 1
     gate = TradeLatencyGate(cfg)
     # Turn on
     for p95 in [230, 240]:
-        gate._effective_samples = [p95]
-        gate.state.total_samples += 1
+        gate.update(-100.0, effective_ms=p95, backlog=False, outlier=False, skew_ms=100.0)
         gate.snapshot()
     assert gate.snapshot()["warn_p95"] is True
     # Clear with below-off samples
-    for p95 in [160, 149, 140]:
-        gate._effective_samples = [p95]
-        gate.state.total_samples += 1
-        gate.snapshot()
+    for p95 in [160, 149, 140, 130]:
+        gate.update(-100.0, effective_ms=p95, backlog=False, outlier=False, skew_ms=100.0)
         snap = gate.snapshot()
     assert snap["warn_p95"] is False
 
@@ -121,6 +119,8 @@ def test_warn_aggregate_or_logic() -> None:
     cfg.min_samples = 1
     cfg.warn_ms_min = 0
     cfg.backlog_warn_ms = 20
+    cfg.consecutive_p95_to_warn = 1
+    cfg.effective_window_size = 1
     gate = TradeLatencyGate(cfg)
     gate.update(-120.0, effective_ms=40.0, backlog=False, outlier=False, skew_ms=120.0)
     snap = gate.snapshot()
@@ -128,10 +128,8 @@ def test_warn_aggregate_or_logic() -> None:
     assert snap["warn_p95"] is False
     assert snap["warn"] is True
     # Force warn_p95 to true without warn_last.
-    gate._effective_samples = [200.0]
-    gate.state.total_samples += 1
+    gate.update(-100.0, effective_ms=200.0, backlog=False, outlier=False, skew_ms=100.0)
     gate.state.last_effective_ms = 0.0
-    gate.snapshot()
     snap = gate.snapshot()
     assert snap["warn_last"] is False
     assert snap["warn_p95"] is True

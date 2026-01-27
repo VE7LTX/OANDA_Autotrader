@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from oanda_autotrader.retrain_gate import evaluate_retrain_gate
 

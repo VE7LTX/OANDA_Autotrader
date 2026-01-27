@@ -12,6 +12,10 @@ import time
 from typing import Iterable
 
 import numpy as np
+import sys
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
+
 from oanda_autotrader.retrain_gate import evaluate_retrain_gate
 
 try:

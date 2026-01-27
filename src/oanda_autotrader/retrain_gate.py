@@ -176,16 +176,35 @@ def evaluate_retrain_gate(
     mae, median_abs_move, fields_used = compute_score_metrics(records)
     coverage = len(records) / max(window_n, 1) if records else None
 
-    stale = (
-        is_file_stale(monitor_path, stale_monitor_s)
-        or is_file_stale(predictions_path, stale_pred_s)
-        or is_file_stale(scores_path, stale_score_s)
-    )
+    monitor_stale = is_file_stale(monitor_path, stale_monitor_s)
+    pred_stale = is_file_stale(predictions_path, stale_pred_s)
+    scores_stale = is_file_stale(scores_path, stale_score_s)
+    stale = monitor_stale or pred_stale or scores_stale
     candle_age = latest_candle_age(candles_dir, candles_pattern)
     if candle_age is None or candle_age > stale_candle_s:
         stale = True
 
     blocked = read_trade_gate_blocked(monitor_path)
+
+    if pred_stale and not monitor_stale and not blocked and (coverage is None or scores_stale):
+        return RetrainGateDecision(
+            allow=True,
+            reason="bootstrap_pred",
+            coverage=coverage or 0.0,
+            mae=mae,
+            mae_threshold=None,
+            window_n=len(records),
+            fields_used=fields_used,
+            blocked=blocked,
+            stale=stale,
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
+        )
 
     if coverage is None:
         return RetrainGateDecision(
@@ -198,7 +217,13 @@ def evaluate_retrain_gate(
             fields_used=fields_used,
             blocked=blocked,
             stale=stale,
-            details={"records": len(records), "candle_age_s": candle_age},
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
         )
 
     if stale:
@@ -212,7 +237,13 @@ def evaluate_retrain_gate(
             fields_used=fields_used,
             blocked=blocked,
             stale=stale,
-            details={"records": len(records), "candle_age_s": candle_age},
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
         )
 
     if blocked:
@@ -226,7 +257,13 @@ def evaluate_retrain_gate(
             fields_used=fields_used,
             blocked=blocked,
             stale=stale,
-            details={"records": len(records), "candle_age_s": candle_age},
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
         )
 
     if coverage < min_coverage:
@@ -240,7 +277,13 @@ def evaluate_retrain_gate(
             fields_used=fields_used,
             blocked=blocked,
             stale=stale,
-            details={"records": len(records), "candle_age_s": candle_age},
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
         )
 
     mae_threshold = (
@@ -257,7 +300,13 @@ def evaluate_retrain_gate(
             fields_used=fields_used,
             blocked=blocked,
             stale=stale,
-            details={"records": len(records), "candle_age_s": candle_age},
+            details={
+                "records": len(records),
+                "candle_age_s": candle_age,
+                "monitor_stale": monitor_stale,
+                "pred_stale": pred_stale,
+                "scores_stale": scores_stale,
+            },
         )
 
     return RetrainGateDecision(
@@ -270,5 +319,11 @@ def evaluate_retrain_gate(
         fields_used=fields_used,
         blocked=blocked,
         stale=stale,
-        details={"records": len(records), "candle_age_s": candle_age},
+        details={
+            "records": len(records),
+            "candle_age_s": candle_age,
+            "monitor_stale": monitor_stale,
+            "pred_stale": pred_stale,
+            "scores_stale": scores_stale,
+        },
     )

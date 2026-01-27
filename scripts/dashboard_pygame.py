@@ -139,6 +139,9 @@ class SharedState:
         self.recon_std_error: float | None = None
         self.recon_k: float = 1.5
         self.pred_scores: dict | None = None
+        self.coverage_history: list[float] = []
+        self.retrain_gate: dict | None = None
+        self.retrain_history: list[bool] = []
         self.stream_metrics = StreamMetrics(window_seconds=10)
         self.last_latency_log_ts: float | None = None
         self.trade_gate: TradeLatencyGate | None = None
@@ -200,6 +203,16 @@ class SharedState:
     def update_scores(self, scores: dict | None) -> None:
         with self.lock:
             self.pred_scores = scores
+            if scores and isinstance(scores.get("coverage"), (int, float)):
+                self.coverage_history.append(float(scores["coverage"]))
+                self.coverage_history = self.coverage_history[-self.max_candles :]
+
+    def update_retrain_gate(self, gate: dict | None) -> None:
+        with self.lock:
+            self.retrain_gate = gate
+            if gate and isinstance(gate.get("allow"), bool):
+                self.retrain_history.append(bool(gate["allow"]))
+                self.retrain_history = self.retrain_history[-self.max_candles :]
 
     def update_tick(self, price: float, ts: float) -> None:
         with self.lock:
@@ -434,6 +447,19 @@ def scores_loop(state: SharedState, interval: int, path: str) -> None:
         state.update_scores(scores)
         time.sleep(interval)
 
+
+def retrain_gate_loop(state: SharedState, interval: int, monitor_path: str) -> None:
+    while True:
+        gate = None
+        try:
+            latest = _last_json_line(monitor_path)
+            if latest:
+                gate = latest.get("retrain_gate")
+        except Exception:
+            gate = None
+        state.update_retrain_gate(gate)
+        time.sleep(interval)
+
 async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
@@ -626,6 +652,7 @@ def main() -> None:
     recon_interval = _env_int("OANDA_DASHBOARD_RECON_INTERVAL", 5)
     scores_path = _env("OANDA_DASHBOARD_SCORE_PATH", "data/prediction_scores.jsonl")
     scores_interval = _env_int("OANDA_DASHBOARD_SCORE_INTERVAL", 5)
+    retrain_interval = _env_int("OANDA_DASHBOARD_RETRAIN_INTERVAL", 5)
     monitor_interval = _env_float("OANDA_MONITOR_INTERVAL_SECONDS", 15.0)
     monitor_path = _env("OANDA_MONITOR_PATH", "data/monitor.jsonl")
     candles_dir = _env("OANDA_DASHBOARD_CANDLES_DIR", "data")
@@ -681,6 +708,11 @@ def main() -> None:
     threading.Thread(
         target=scores_loop,
         args=(state, scores_interval, scores_path),
+        daemon=True,
+    ).start()
+    threading.Thread(
+        target=retrain_gate_loop,
+        args=(state, retrain_interval, monitor_path),
         daemon=True,
     ).start()
 
@@ -758,6 +790,8 @@ def main() -> None:
             preds = state.predictions
             recon = state.recon
             scores = state.pred_scores
+            coverage_hist = list(state.coverage_history)
+            retrain_hist = list(state.retrain_history)
 
         if time.time() - last_candle_check >= 5.0:
             last_candle_check = time.time()
@@ -882,6 +916,37 @@ def main() -> None:
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
         draw_grid(screen, price_rect)
+        # Coverage split band (hit vs miss) behind candles.
+        if coverage_hist:
+            band_height = max(18, int(price_rect.height * 0.12))
+            band_rect = pygame.Rect(
+                price_rect.left,
+                price_rect.bottom - band_height,
+                price_rect.width,
+                band_height,
+            )
+            band_surface = pygame.Surface((band_rect.width, band_rect.height), pygame.SRCALPHA)
+            span = max(len(coverage_hist), 1)
+            step_px = max(2, int(band_rect.width / span))
+            start_x = band_rect.right - (len(coverage_hist) * step_px)
+            for i, cov in enumerate(coverage_hist[-span:]):
+                cov = min(max(cov, 0.0), 1.0)
+                x = start_x + i * step_px
+                red_h = int(band_rect.height * (1.0 - cov))
+                green_h = band_rect.height - red_h
+                if red_h > 0:
+                    pygame.draw.rect(
+                        band_surface,
+                        (200, 80, 80, 80),
+                        pygame.Rect(x - band_rect.left, band_rect.height - red_h, step_px, red_h),
+                    )
+                if green_h > 0:
+                    pygame.draw.rect(
+                        band_surface,
+                        (80, 200, 120, 90),
+                        pygame.Rect(x - band_rect.left, band_rect.height - red_h - green_h, step_px, green_h),
+                    )
+            screen.blit(band_surface, (band_rect.left, band_rect.top))
         price_vals = []
         for c in candles:
             price_vals.extend([c["l"], c["h"]])
@@ -926,6 +991,23 @@ def main() -> None:
             unit=None,
             precision=5,
         )
+
+        # Retrain decision bubble strip (allow/skip) at the bottom of the chart.
+        if retrain_hist:
+            strip_h = 10
+            strip_rect = pygame.Rect(
+                price_rect.left,
+                price_rect.bottom - strip_h,
+                price_rect.width,
+                strip_h,
+            )
+            step_px = max(4, int(strip_rect.width / max(len(retrain_hist), 1)))
+            start_x = strip_rect.right - (len(retrain_hist) * step_px)
+            for i, allow in enumerate(retrain_hist):
+                x = start_x + i * step_px + step_px // 2
+                y = strip_rect.top + strip_h // 2
+                color = (80, 200, 120) if allow else (160, 160, 160)
+                pygame.draw.circle(screen, color, (x, y), 3)
 
         if pred_points and pred_record:
             # Draw prediction band as an expanding cloud.

@@ -91,6 +91,7 @@
 - `OANDA_DASHBOARD_PRED_INTERVAL` (default: 5)
 - `OANDA_DASHBOARD_RECON_PATH` (default: data/recon.jsonl)
 - `OANDA_DASHBOARD_RECON_INTERVAL` (default: 5)
+- `OANDA_DASHBOARD_RETRAIN_INTERVAL` (default: 5) # monitor retrain gate poll interval
 - `OANDA_DASHBOARD_LOG_PATH` (default: data/dashboard.log)
 - `OANDA_DASHBOARD_IGNORE_QUIT` (default: false, ignore QUIT events for debugging)
 - `OANDA_DASHBOARD_AUTOSTART` (default: true, start prediction/scoring helpers)

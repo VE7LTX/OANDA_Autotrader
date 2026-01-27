@@ -12,6 +12,7 @@ import time
 from typing import Iterable
 
 import numpy as np
+from oanda_autotrader.retrain_gate import evaluate_retrain_gate
 
 try:
     import torch
@@ -133,6 +134,19 @@ def main() -> None:
     parser.add_argument("--interval-secs", type=int, default=5)
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--max-delta", type=float, default=0.0005)
+    parser.add_argument("--scores-path", default="data/prediction_scores.jsonl")
+    parser.add_argument("--monitor-path", default="data/monitor.jsonl")
+    parser.add_argument("--candles-dir", default="data")
+    parser.add_argument("--candles-pattern", default="usd_cad_candles_")
+    parser.add_argument("--gate-window", type=int, default=50)
+    parser.add_argument("--min-coverage", type=float, default=0.60)
+    parser.add_argument("--mae-threshold", type=float, default=0.00010)
+    parser.add_argument("--mae-vol-scale", type=float, default=0.25)
+    parser.add_argument("--stale-monitor-s", type=float, default=45.0)
+    parser.add_argument("--stale-pred-s", type=float, default=120.0)
+    parser.add_argument("--stale-score-s", type=float, default=300.0)
+    parser.add_argument("--stale-candle-s", type=float, default=120.0)
+    parser.add_argument("--force-retrain", action="store_true")
     args = parser.parse_args()
     pred_latest_path = args.pred_latest_path or args.pred_path or "data/predictions_latest.jsonl"
 
@@ -143,6 +157,43 @@ def main() -> None:
         if matrix.size == 0 or len(closes) < (args.horizon + 1):
             time.sleep(args.retrain_interval)
             continue
+
+        if not args.force_retrain:
+            gate = evaluate_retrain_gate(
+                scores_path=args.scores_path,
+                monitor_path=args.monitor_path,
+                predictions_path=pred_latest_path,
+                candles_dir=args.candles_dir,
+                candles_pattern=args.candles_pattern,
+                window_n=args.gate_window,
+                min_coverage=args.min_coverage,
+                fixed_mae_threshold=args.mae_threshold,
+                volatility_scale=args.mae_vol_scale,
+                stale_monitor_s=args.stale_monitor_s,
+                stale_pred_s=args.stale_pred_s,
+                stale_score_s=args.stale_score_s,
+                stale_candle_s=args.stale_candle_s,
+            )
+            coverage = f"{gate.coverage:.3f}" if gate.coverage is not None else "na"
+            mae = f"{gate.mae:.6f}" if gate.mae is not None else "na"
+            mae_thr = f"{gate.mae_threshold:.6f}" if gate.mae_threshold is not None else "na"
+            decision = "ALLOW" if gate.allow else "SKIP"
+            print(
+                "retrain_gate",
+                f"window_n={gate.window_n}",
+                f"coverage={coverage}",
+                f"mae={mae}",
+                f"mae_threshold={mae_thr}",
+                f"decision={decision}",
+                f"reason={gate.reason}",
+            )
+            if not gate.allow:
+                if args.once:
+                    break
+                time.sleep(args.retrain_interval)
+                continue
+        else:
+            print("retrain_gate", "force=true", "decision=ALLOW", "reason=forced")
 
         # Align X_t -> delta close for each horizon step.
         n = len(closes) - args.horizon

@@ -19,10 +19,12 @@ Start-Process -FilePath "powershell" -ArgumentList @(
 # Launch dashboard (detached)
 $dashArgs = @()
 if ($UsePythonw) { $dashArgs += "-UsePythonw" }
-Start-Process -FilePath "powershell" -ArgumentList @(
+$dashArgsList = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", (Join-Path $root "scripts\launch_dashboard.ps1")
-) + $dashArgs | Out-Null
+)
+$dashArgsList += $dashArgs
+Start-Process -FilePath "powershell" -ArgumentList $dashArgsList | Out-Null
 
 Write-Host "Launch complete."

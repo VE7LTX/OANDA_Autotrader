@@ -384,7 +384,7 @@ def scores_loop(state: SharedState, interval: int, path: str) -> None:
         state.update_scores(scores)
         time.sleep(interval)
 
-    async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
+async def stream_loop(state: SharedState, group: str, account: str, instrument: str) -> None:
     groups = load_account_groups("accounts.yaml")
     group_obj, entry = select_account(groups, group, account)
     config = resolve_account_credentials(group_obj, entry)
@@ -410,7 +410,10 @@ def scores_loop(state: SharedState, interval: int, path: str) -> None:
                 sample = {
                     "received_ts": ts,
                     "server_time": payload.get("time"),
-                    "latency_ms": state.stream_metrics.last_latency_ms,
+                    "latency_ms_raw": state.stream_metrics.last_latency_raw_ms,
+                    "latency_ms_clamped": state.stream_metrics.last_latency_ms,
+                    "skew_ms": state.stream_metrics.last_skew_ms,
+                    "is_backlog": state.stream_metrics.last_backlog,
                 }
                 os.makedirs(os.path.dirname(log_path), exist_ok=True)
                 with open(log_path, "a", encoding="utf-8") as handle:

@@ -107,3 +107,8 @@
 ## Stream Latency Logging
 - `OANDA_STREAM_LATENCY_LOG_PATH` (default: data/stream_latency.jsonl)
 - `OANDA_STREAM_LATENCY_LOG_INTERVAL` (default: 5.0)
+
+Latency handling notes:
+- negative values are treated as clock skew (clamped to 0 in stats)
+- >2000ms samples are flagged as backlog
+- >10000ms samples are treated as outliers (excluded from p95)

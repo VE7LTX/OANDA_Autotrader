@@ -35,7 +35,11 @@ class StreamLatencySample:
     Single stream latency sample (ms).
     """
 
+    raw_ms: float
     milliseconds: float
+    backlog: bool
+    skew_ms: float | None
+    outlier: bool
     timestamp: float
 
 
@@ -56,6 +60,9 @@ class StreamMetrics:
         self.last_error_ts: float | None = None
         self.last_reconnect_ts: float | None = None
         self.last_latency_ms: float | None = None
+        self.last_latency_raw_ms: float | None = None
+        self.last_skew_ms: float | None = None
+        self.last_backlog: bool | None = None
 
     def on_event(self, event: dict) -> None:
         event_type = event.get("event")
@@ -93,20 +100,49 @@ class StreamMetrics:
         server_ts = self._parse_timestamp(server_time)
         if server_ts is None:
             return
-        latency_ms = (received_ts - server_ts) * 1000.0
+        raw_ms = (received_ts - server_ts) * 1000.0
+        latency_ms, skew_ms, backlog, outlier = self._normalize_latency(raw_ms)
+        self.last_latency_raw_ms = raw_ms
         self.last_latency_ms = latency_ms
+        self.last_skew_ms = skew_ms
+        self.last_backlog = backlog
         self._latency_samples.append(
-            StreamLatencySample(milliseconds=latency_ms, timestamp=received_ts)
+            StreamLatencySample(
+                raw_ms=raw_ms,
+                milliseconds=latency_ms,
+                backlog=backlog,
+                skew_ms=skew_ms,
+                outlier=outlier,
+                timestamp=received_ts,
+            )
         )
         self._trim(received_ts)
 
     def latency_stats(self) -> tuple[float | None, float | None, float | None]:
-        if not self._latency_samples:
+        values = [s.milliseconds for s in self._latency_samples if not s.outlier]
+        if not values:
             return None, None, None
-        values = sorted(sample.milliseconds for sample in self._latency_samples)
+        values = sorted(values)
         mean = sum(values) / len(values)
         p95_index = max(0, int(round(0.95 * (len(values) - 1))))
         return self.last_latency_ms, values[p95_index], mean
+
+    @staticmethod
+    def _normalize_latency(raw_ms: float) -> tuple[float, float | None, bool, bool]:
+        # Treat slight negative values as clock skew; clamp to 0 for stats.
+        skew_ms = None
+        backlog = False
+        outlier = False
+        if raw_ms < -250.0:
+            outlier = True
+        elif raw_ms < 0.0:
+            skew_ms = abs(raw_ms)
+            raw_ms = 0.0
+        if raw_ms > 2000.0:
+            backlog = True
+        if raw_ms > 10000.0:
+            outlier = True
+        return raw_ms, skew_ms, backlog, outlier
 
     @staticmethod
     def _parse_timestamp(value: str) -> float | None:

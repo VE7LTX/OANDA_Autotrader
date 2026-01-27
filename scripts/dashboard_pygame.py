@@ -846,8 +846,13 @@ def main() -> None:
         )
         screen.blit(line5, (padding, padding + line_h * 5))
 
+        pred_hint = ""
+        if pred_status == "PRED: stale":
+            pred_hint = "hint=prediction job not running / stuck"
+        elif pred_status == "PRED: --":
+            pred_hint = "hint=prediction file missing"
         line6 = font.render(
-            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status}",
+            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status} {pred_hint}",
             True,
             (200, 200, 200),
         )

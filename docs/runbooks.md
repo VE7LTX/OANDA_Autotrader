@@ -38,6 +38,12 @@ Exit codes:
 scripts\\launch_capture.ps1
 ```
 
+## Readiness check (single boolean gate)
+```bash
+python scripts/readiness_check.py
+python scripts/readiness_check.py --json
+```
+
 ## End-to-end (manual)
 1) Start candle capture:
 ```bash

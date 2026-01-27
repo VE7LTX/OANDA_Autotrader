@@ -663,6 +663,39 @@ def draw_text_wrapped(screen, font, text, x, y, max_width, color=(200, 200, 200)
     return len(lines)
 
 
+def draw_kv_table(
+    screen,
+    font,
+    items,
+    x,
+    y,
+    total_width,
+    *,
+    key_width=180,
+    line_height=24,
+    key_color=(170, 170, 170),
+    value_color=(200, 200, 200),
+):
+    y_cursor = y
+    value_width = max(total_width - key_width, 60)
+    for key, value in items:
+        key_text = f"{key}:"
+        key_render = font.render(key_text, True, key_color)
+        screen.blit(key_render, (x, y_cursor))
+        lines = draw_text_wrapped(
+            screen,
+            font,
+            str(value),
+            x + key_width,
+            y_cursor,
+            value_width,
+            value_color,
+            line_height=line_height,
+        )
+        y_cursor += line_height * max(lines, 1)
+    return y_cursor
+
+
 def main() -> None:
     interval = _env_int("OANDA_DASHBOARD_LATENCY_INTERVAL", 5)
     max_points = _env_int("OANDA_DASHBOARD_HISTORY", 120)
@@ -834,26 +867,13 @@ def main() -> None:
         screen.blit(header, (padding, padding))
 
         y = padding
-        line1 = font.render(
+        title = font.render(
             f"{instrument} | {instrument_interval}s candles   AE mode: reconstruction   Anomaly sigma: 2.0",
             True,
-            (200, 200, 200),
+            (220, 220, 220),
         )
-        screen.blit(line1, (padding, y + line_h))
+        screen.blit(title, (padding, y))
         y += line_h
-
-        lines_used = draw_text_wrapped(
-            screen,
-            font,
-            f"Latency live: {live:.2f} ms | practice: {practice:.2f} ms"
-            if practice is not None and live is not None
-            else "Latency live: -- | practice: --",
-            padding,
-            y + line_h,
-            width - padding * 2,
-            (200, 200, 200),
-        )
-        y += line_h * max(lines_used, 1)
 
         uptime_seconds = int(time.time() - start_ts)
         uptime_label = f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}"
@@ -885,27 +905,19 @@ def main() -> None:
             gate = state.trade_gate.snapshot()
             status = "BLOCK" if gate.get("blocked") else "OK"
             trade_gate_text = f"{status} warn:{gate.get('warn')}"
-        lines_used = draw_text_wrapped(
-            screen,
-            font,
-            f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  last_ok: {success_age}  reconnects: {reconnects}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
-            padding,
-            y + line_h,
-            width - padding * 2,
-            (200, 200, 200),
-        )
-        y += line_h * max(lines_used, 1)
-
-        lines_used = draw_text_wrapped(
-            screen,
-            font,
-            f"P&L: {pl_text}  balance: {bal_text}  errors: {metrics.errors}  last_error: {last_err}",
-            padding,
-            y + line_h,
-            width - padding * 2,
-            (200, 200, 200),
-        )
-        y += line_h * max(lines_used, 1)
+        left_items = [
+            ("Latency live", f"{live:.2f} ms" if live is not None else "--"),
+            ("Latency practice", f"{practice:.2f} ms" if practice is not None else "--"),
+            ("Stream msgs/sec", f"{metrics.messages_per_sec:.2f}"),
+            ("Stream total", f"{metrics.messages_total}"),
+            ("Stream latency", latency_text),
+            ("Last OK", success_age),
+            ("Reconnects", f"{reconnects}"),
+            ("Gate", trade_gate_text),
+            ("Uptime", uptime_label),
+            ("Errors", f"{metrics.errors}"),
+            ("Last error", last_err),
+        ]
 
         pred_status = "PRED: --"
         pred_ts_label = "--"
@@ -935,46 +947,79 @@ def main() -> None:
                 pred_low = min(item.get("low") for item in horizon if item.get("low") is not None)
                 pred_high = max(item.get("high") for item in horizon if item.get("high") is not None)
 
+        pred_hint = ""
+        if pred_status == "PRED: stale":
+            pred_hint = "prediction job not running / stuck"
+        elif pred_status == "PRED: --":
+            pred_hint = "prediction file missing"
+
         candle_status = "OK" if candle_file_age is not None and candle_file_age <= candles_fresh_s else "STALE"
         candle_age_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
-        lines_used = draw_text_wrapped(
+        ae_text = "--"
+        if ae_status:
+            parts = []
+            if "cycle" in ae_status:
+                parts.append(f"cycle {ae_status['cycle']}")
+            if "epoch" in ae_status:
+                parts.append(f"epoch {ae_status['epoch']}")
+            if "loss" in ae_status:
+                parts.append(f"loss {ae_status['loss']}")
+            if "val_loss" in ae_status:
+                parts.append(f"val {ae_status['val_loss']}")
+            if "ts" in ae_status:
+                parts.append(f"ts {ae_status['ts']}")
+            ae_text = " | ".join(parts) if parts else "--"
+
+        right_items = [
+            ("P&L", pl_text),
+            ("Balance", bal_text),
+            ("Candles", f"{candle_status} age={candle_age_label}"),
+            ("Pred status", pred_status),
+            ("Pred ts", pred_ts_label),
+            ("Pred base", _fmt_float(pred_base)),
+            ("Pred p1", _fmt_float(pred_step1)),
+            ("Pred p12", _fmt_float(pred_stepN)),
+            ("Pred low/high", f"{_fmt_float(pred_low)} / {_fmt_float(pred_high)}"),
+            ("Coverage", coverage),
+            ("MAE", mae),
+            ("AE status", ae_text),
+        ]
+        if pred_hint:
+            right_items.insert(4, ("Pred hint", pred_hint))
+
+        table_width = max(320, (width - padding * 3) // 2)
+        left_end = draw_kv_table(
             screen,
             font,
-            f"candles {candle_status} age={candle_age_label}",
+            left_items,
             padding,
             y + line_h,
-            width - padding * 2,
-            (200, 200, 200),
+            table_width,
+            key_width=180,
+            line_height=line_h,
         )
-        y += line_h * max(lines_used, 1)
-        lines_used = draw_text_wrapped(
+        right_end = draw_kv_table(
+            screen,
+            font,
+            right_items,
+            padding * 2 + table_width,
+            y + line_h,
+            table_width,
+            key_width=160,
+            line_height=line_h,
+        )
+
+        draw_text_wrapped(
             screen,
             font,
             "accuracy markers: green=hit red=miss",
             padding,
-            y + 2,
+            max(left_end, right_end) + 4,
             width - padding * 2,
             (160, 160, 160),
         )
-        y += line_h * max(lines_used, 1)
 
-        pred_hint = ""
-        if pred_status == "PRED: stale":
-            pred_hint = "hint=prediction job not running / stuck"
-        elif pred_status == "PRED: --":
-            pred_hint = "hint=prediction file missing"
-        lines_used = draw_text_wrapped(
-            screen,
-            font,
-            f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status} {pred_hint}",
-            padding,
-            y + line_h,
-            width - padding * 2,
-            (200, 200, 200),
-        )
-        y += line_h * max(lines_used, 1)
-
-        charts_top = y + line_h * 2
+        charts_top = max(left_end, right_end) + line_h * 2
         chart_height = max(220, height - charts_top - padding - 80)
         price_rect = pygame.Rect(padding, charts_top, width - padding * 2, chart_height)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)
@@ -1204,30 +1249,6 @@ def main() -> None:
             f"{instrument} last: {last_close if last_close is not None else '--'}  vol: {last_vol if last_vol is not None else '--'}  ts: {last_candle_ts or '--'}",
             padding,
             price_rect.bottom + 6,
-            width - padding * 2,
-            (200, 200, 200),
-        )
-
-        ae_text = "--"
-        if ae_status:
-            parts = []
-            if "cycle" in ae_status:
-                parts.append(f"cycle {ae_status['cycle']}")
-            if "epoch" in ae_status:
-                parts.append(f"epoch {ae_status['epoch']}")
-            if "loss" in ae_status:
-                parts.append(f"loss {ae_status['loss']}")
-            if "val_loss" in ae_status:
-                parts.append(f"val {ae_status['val_loss']}")
-            if "ts" in ae_status:
-                parts.append(f"ts {ae_status['ts']}")
-            ae_text = " | ".join(parts) if parts else "--"
-        draw_text_wrapped(
-            screen,
-            font,
-            f"AE status: {ae_text}",
-            padding,
-            price_rect.bottom + 32,
             width - padding * 2,
             (200, 200, 200),
         )

@@ -830,24 +830,27 @@ def main() -> None:
         header = font.render("OANDA Live Dashboard", True, (230, 230, 230))
         screen.blit(header, (padding, padding))
 
+        y = padding
         line1 = font.render(
             f"{instrument} | {instrument_interval}s candles   AE mode: reconstruction   Anomaly sigma: 2.0",
             True,
             (200, 200, 200),
         )
-        screen.blit(line1, (padding, padding + line_h))
+        screen.blit(line1, (padding, y + line_h))
+        y += line_h
 
-        draw_text_wrapped(
+        lines_used = draw_text_wrapped(
             screen,
             font,
             f"Latency live: {live:.2f} ms | practice: {practice:.2f} ms"
             if practice is not None and live is not None
             else "Latency live: -- | practice: --",
             padding,
-            padding + line_h * 2,
+            y + line_h,
             screen.get_width() - padding * 2,
             (200, 200, 200),
         )
+        y += line_h * max(lines_used, 1)
 
         uptime_seconds = int(time.time() - start_ts)
         uptime_label = f"{uptime_seconds // 3600:02d}:{(uptime_seconds % 3600) // 60:02d}:{uptime_seconds % 60:02d}"
@@ -879,25 +882,27 @@ def main() -> None:
             gate = state.trade_gate.snapshot()
             status = "BLOCK" if gate.get("blocked") else "OK"
             trade_gate_text = f"{status} warn:{gate.get('warn')}"
-        draw_text_wrapped(
+        lines_used = draw_text_wrapped(
             screen,
             font,
             f"stream msgs/sec: {metrics.messages_per_sec:.2f}  total: {metrics.messages_total}  latency: {latency_text}  last_ok: {success_age}  reconnects: {reconnects}  gate: {trade_gate_text}  uptime: {uptime_label}  coverage: {coverage}  mae: {mae}",
             padding,
-            padding + line_h * 3,
+            y + line_h,
             screen.get_width() - padding * 2,
             (200, 200, 200),
         )
+        y += line_h * max(lines_used, 1)
 
-        draw_text_wrapped(
+        lines_used = draw_text_wrapped(
             screen,
             font,
             f"P&L: {pl_text}  balance: {bal_text}  errors: {metrics.errors}  last_error: {last_err}",
             padding,
-            padding + line_h * 4,
+            y + line_h,
             screen.get_width() - padding * 2,
             (200, 200, 200),
         )
+        y += line_h * max(lines_used, 1)
 
         pred_status = "PRED: --"
         pred_ts_label = "--"
@@ -929,41 +934,44 @@ def main() -> None:
 
         candle_status = "OK" if candle_file_age is not None and candle_file_age <= candles_fresh_s else "STALE"
         candle_age_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
-        draw_text_wrapped(
+        lines_used = draw_text_wrapped(
             screen,
             font,
             f"candles {candle_status} age={candle_age_label}",
             padding,
-            padding + line_h * 5,
+            y + line_h,
             screen.get_width() - padding * 2,
             (200, 200, 200),
         )
-        draw_text_wrapped(
+        y += line_h * max(lines_used, 1)
+        lines_used = draw_text_wrapped(
             screen,
             font,
             "accuracy markers: green=hit red=miss",
             padding,
-            padding + line_h * 5 + 18,
+            y + 2,
             screen.get_width() - padding * 2,
             (160, 160, 160),
         )
+        y += line_h * max(lines_used, 1)
 
         pred_hint = ""
         if pred_status == "PRED: stale":
             pred_hint = "hint=prediction job not running / stuck"
         elif pred_status == "PRED: --":
             pred_hint = "hint=prediction file missing"
-        draw_text_wrapped(
+        lines_used = draw_text_wrapped(
             screen,
             font,
             f"pred_ts: {pred_ts_label}  base: {_fmt_float(pred_base)}  p1: {_fmt_float(pred_step1)}  p12: {_fmt_float(pred_stepN)}  {pred_status} {pred_hint}",
             padding,
-            padding + line_h * 6,
+            y + line_h,
             screen.get_width() - padding * 2,
             (200, 200, 200),
         )
+        y += line_h * max(lines_used, 1)
 
-        charts_top = padding + line_h * 8 + 24
+        charts_top = y + line_h * 2
         chart_h = 180
         price_rect = pygame.Rect(padding, charts_top, 1060 - padding * 2, chart_h * 2)
         pygame.draw.rect(screen, (30, 36, 48), price_rect)

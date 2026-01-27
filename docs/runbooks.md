@@ -65,6 +65,8 @@ Options:
 - `-UsePythonw` (no console window)
 - `-IgnoreQuit` (ignore QUIT events for debugging)
 - `-WorkingDir` (override repo root)
+- `-RedirectLogs` (write stdout/stderr to files)
+- `-StdoutPath` / `-StderrPath` (override log paths)
 
 The launcher writes the dashboard PID to:
 - `data/dashboard.pid`

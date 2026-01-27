@@ -13,6 +13,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--warn-seconds", type=float, default=120.0)
+    parser.add_argument("--features-path", default="data/usd_cad_features.jsonl")
+    parser.add_argument("--fresh-features-s", type=float, default=300.0)
     return parser.parse_args()
 
 
@@ -56,11 +58,17 @@ def main() -> None:
     candle_ts = pipeline_status._parse_iso(candle_line.get("time")) if candle_line else None
     candle_age = pipeline_status._age_seconds(candle_ts, now)
 
+    features_path = args.features_path
+    features_exists = os.path.exists(features_path)
+    features_mtime = os.path.getmtime(features_path) if features_exists else None
+    features_age = pipeline_status._age_seconds(features_mtime, now)
+
     warn_limit = args.warn_seconds
     monitor_limit = warn_limit if warn_limit is not None else parsed.fresh_monitor_s
     pred_limit = warn_limit if warn_limit is not None else parsed.fresh_pred_s
     score_limit = warn_limit if warn_limit is not None else parsed.fresh_score_s
     candle_limit = warn_limit if warn_limit is not None else parsed.fresh_candle_s
+    features_limit = warn_limit if warn_limit is not None else args.fresh_features_s
 
     def reason_and_hint(exists: bool, age: float | None, limit: float, missing_hint: str, stale_hint: str):
         if not exists:
@@ -99,6 +107,13 @@ def main() -> None:
         "candle file not found, capture likely not started",
         "run scripts/launch_capture.ps1 (or capture script)",
     )
+    features_reason, features_hint = reason_and_hint(
+        features_exists,
+        features_age,
+        features_limit,
+        "features file missing",
+        "features not updated / run build_features",
+    )
 
     payload = {
         "ready": False,
@@ -125,6 +140,12 @@ def main() -> None:
             "fresh": candle_age is not None and candle_age <= candle_limit,
             "reason": candle_reason,
             "hint": candle_hint,
+        },
+        "features": {
+            "age_s": features_age,
+            "fresh": features_age is not None and features_age <= features_limit,
+            "reason": features_reason,
+            "hint": features_hint,
         },
     }
     payload["ready"] = all(item.get("fresh") for item in payload.values() if isinstance(item, dict))

@@ -135,6 +135,7 @@ Schema:
 - rest (per-name latency stats)
 - stream (StreamMetrics snapshot)
 - trade_gate (TradeLatencyGate snapshot)
+- retrain_gate (retrain gate decision summary)
 
 Stream snapshot fields include:
 - latency_last_ms / latency_p95_ms / latency_mean_ms (effective)
@@ -146,6 +147,15 @@ Trade gate fields include:
 - warn_last (instantaneous spike based on last_effective_ms)
 - warn_p95 (sustained warning based on effective_p95_ms)
 - effective_p95_ms / effective_mean_ms (windowed stats for gate)
+
+Retrain gate fields include:
+- allow (bool)
+- reason (string)
+- coverage / mae / mae_threshold
+- window_n
+- fields_used (list)
+- blocked (bool)
+- stale (bool)
 
 ## Logs
 - data/dashboard.log (dashboard lifecycle + pygame events)

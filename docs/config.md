@@ -141,3 +141,22 @@ Profiles (calibration outputs) are written to:
 ## Monitoring Loop
 - `OANDA_MONITOR_INTERVAL_SECONDS` (default: 15.0)
 - `OANDA_MONITOR_PATH` (default: data/monitor.jsonl)
+
+## Retrain Gate (monitor snapshot)
+The monitor loop can include a retrain decision summary in `monitor.jsonl`.
+Defaults match the training loop unless overridden.
+
+- `OANDA_RETRAIN_GATE_MONITOR` (default: true)
+- `OANDA_RETRAIN_SCORES_PATH` (default: data/prediction_scores.jsonl)
+- `OANDA_RETRAIN_MONITOR_PATH` (default: data/monitor.jsonl)
+- `OANDA_RETRAIN_PRED_PATH` (default: data/predictions_latest.jsonl)
+- `OANDA_RETRAIN_CANDLES_DIR` (default: data)
+- `OANDA_RETRAIN_CANDLES_PATTERN` (default: usd_cad_candles_)
+- `OANDA_RETRAIN_GATE_WINDOW` (default: 50)
+- `OANDA_RETRAIN_MIN_COVERAGE` (default: 0.60)
+- `OANDA_RETRAIN_MAE_THRESHOLD` (default: 0.00010)
+- `OANDA_RETRAIN_MAE_VOL_SCALE` (default: 0.25)
+- `OANDA_RETRAIN_STALE_MONITOR_S` (default: 45.0)
+- `OANDA_RETRAIN_STALE_PRED_S` (default: 120.0)
+- `OANDA_RETRAIN_STALE_SCORE_S` (default: 300.0)
+- `OANDA_RETRAIN_STALE_CANDLE_S` (default: 120.0)

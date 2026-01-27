@@ -631,6 +631,24 @@ def main() -> None:
     candles_dir = _env("OANDA_DASHBOARD_CANDLES_DIR", "data")
     candles_pattern = _env("OANDA_DASHBOARD_CANDLES_PATTERN", "usd_cad_candles_")
     candles_fresh_s = _env_float("OANDA_DASHBOARD_CANDLES_FRESH_S", 120.0)
+    retrain_gate_enabled = _env_bool("OANDA_RETRAIN_GATE_MONITOR", True)
+    retrain_gate_kwargs = None
+    if retrain_gate_enabled:
+        retrain_gate_kwargs = {
+            "scores_path": _env("OANDA_RETRAIN_SCORES_PATH", scores_path),
+            "monitor_path": _env("OANDA_RETRAIN_MONITOR_PATH", monitor_path),
+            "predictions_path": _env("OANDA_RETRAIN_PRED_PATH", preds_path),
+            "candles_dir": _env("OANDA_RETRAIN_CANDLES_DIR", candles_dir),
+            "candles_pattern": _env("OANDA_RETRAIN_CANDLES_PATTERN", candles_pattern),
+            "window_n": _env_int("OANDA_RETRAIN_GATE_WINDOW", 50),
+            "min_coverage": _env_float("OANDA_RETRAIN_MIN_COVERAGE", 0.60),
+            "fixed_mae_threshold": _env_float("OANDA_RETRAIN_MAE_THRESHOLD", 0.00010),
+            "volatility_scale": _env_float("OANDA_RETRAIN_MAE_VOL_SCALE", 0.25),
+            "stale_monitor_s": _env_float("OANDA_RETRAIN_STALE_MONITOR_S", 45.0),
+            "stale_pred_s": _env_float("OANDA_RETRAIN_STALE_PRED_S", 120.0),
+            "stale_score_s": _env_float("OANDA_RETRAIN_STALE_SCORE_S", 300.0),
+            "stale_candle_s": _env_float("OANDA_RETRAIN_STALE_CANDLE_S", 120.0),
+        }
 
     state = SharedState()
     start_ts = time.time()
@@ -682,6 +700,7 @@ def main() -> None:
             output_path=monitor_path,
             stream_metrics=state.stream_metrics,
             trade_gate=state.trade_gate,
+            retrain_gate_kwargs=retrain_gate_kwargs,
         )
     )
     threading.Thread(

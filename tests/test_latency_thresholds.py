@@ -23,6 +23,16 @@ def test_load_thresholds_from_file(tmp_path: Path) -> None:
 
 
 def test_load_thresholds_missing_uses_defaults(tmp_path: Path) -> None:
-    cfg, meta = load_thresholds("live", "USD_CAD", base_dir=str(tmp_path))
-    assert meta["source"] == "defaults"
-    assert cfg.backlog_warn_ms == 1500.0
+    import os
+    from pathlib import Path
+
+    cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        os.environ["OANDA_LATENCY_THRESHOLDS_DIR"] = str(tmp_path)
+        cfg, meta = load_thresholds("live", "USD_CAD", base_dir=str(tmp_path))
+        assert meta["source"] == "defaults"
+        assert cfg.backlog_warn_ms == 1500.0
+    finally:
+        os.chdir(cwd)
+        os.environ.pop("OANDA_LATENCY_THRESHOLDS_DIR", None)

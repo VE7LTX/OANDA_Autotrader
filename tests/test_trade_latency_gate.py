@@ -31,6 +31,17 @@ def test_gate_blocks_on_backlog() -> None:
     assert gate.state.blocked is True
 
 
+def test_gate_uses_effective_ms_for_warn() -> None:
+    cfg = TradeLatencyGateConfig(mode="live", instrument="USD_CAD")
+    cfg.min_samples = 1
+    cfg.warn_ms_min = 0
+    cfg.backlog_warn_ms = 20
+    gate = TradeLatencyGate(cfg)
+    gate.update(-120.0, effective_ms=40.0, backlog=False, outlier=False, skew_ms=120.0)
+    assert gate.state.last_effective_ms == 40.0
+    assert gate.should_warn() is True
+
+
 def test_suggest_thresholds_clamps() -> None:
     warn, block = suggest_thresholds(
         [10, 20, 30, 40, 50],

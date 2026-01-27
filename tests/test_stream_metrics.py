@@ -61,11 +61,28 @@ def test_stream_metrics_effective_ms_with_offset() -> None:
     metrics = StreamMetrics(window_seconds=10)
     base = datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
     metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.2)
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.2)
     assert metrics.clock_offset_ms > 0.0
     assert metrics.last_effective_ms == 0.0
-    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base + 0.05)
-    assert metrics.last_effective_ms is not None
-    assert metrics.last_effective_ms >= 0.0
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.16)
+    eff_last, eff_p95, _ = metrics.effective_latency_stats()
+    assert eff_last is not None
+    assert eff_p95 is not None
+    assert eff_p95 > 0.0
+
+
+def test_stream_metrics_snapshot_uses_effective_p95() -> None:
+    metrics = StreamMetrics(window_seconds=10)
+    base = datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
+    # Two negatives establish a ~120ms offset.
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.12)
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.12)
+    # Slightly less negative raw yields positive effective.
+    metrics.record_latency("2026-01-01T00:00:10.000000000Z", base - 0.08)
+    snap = metrics.snapshot()
+    assert snap.latency_p95_ms is not None
+    assert snap.latency_p95_ms > 0.0
+    assert snap.latency_clamped_p95_ms == 0.0
 
 
 def test_stream_metrics_backlog_flag() -> None:

@@ -29,6 +29,12 @@ class StreamMetricsSnapshot:
     latency_last_ms: float | None
     latency_p95_ms: float | None
     latency_mean_ms: float | None
+    latency_clamped_last_ms: float | None
+    latency_clamped_p95_ms: float | None
+    latency_clamped_mean_ms: float | None
+    latency_effective_last_ms: float | None
+    latency_effective_p95_ms: float | None
+    latency_effective_mean_ms: float | None
 
 
 @dataclass
@@ -149,6 +155,15 @@ class StreamMetrics:
         p95_index = max(0, int(round(0.95 * (len(values) - 1))))
         return self.last_latency_ms, values[p95_index], mean
 
+    def effective_latency_stats(self) -> tuple[float | None, float | None, float | None]:
+        values = [s.effective_ms for s in self._latency_samples if not s.outlier]
+        if not values:
+            return None, None, None
+        values = sorted(values)
+        mean = sum(values) / len(values)
+        p95_index = max(0, int(round(0.95 * (len(values) - 1))))
+        return self.last_effective_ms, values[p95_index], mean
+
     def _update_clock_offset(self, raw_ms: float, *, outlier: bool) -> float:
         if raw_ms < 0.0 and not outlier:
             self._neg_skew_samples.append(abs(raw_ms))
@@ -190,7 +205,8 @@ class StreamMetrics:
             return None
 
     def snapshot(self) -> StreamMetricsSnapshot:
-        latency_last, latency_p95, latency_mean = self.latency_stats()
+        latency_last, latency_p95, latency_mean = self.effective_latency_stats()
+        clamped_last, clamped_p95, clamped_mean = self.latency_stats()
         return StreamMetricsSnapshot(
             messages_total=self.messages_total,
             messages_per_sec=self.messages_per_second(),
@@ -204,4 +220,10 @@ class StreamMetrics:
             latency_last_ms=latency_last,
             latency_p95_ms=latency_p95,
             latency_mean_ms=latency_mean,
+            latency_clamped_last_ms=clamped_last,
+            latency_clamped_p95_ms=clamped_p95,
+            latency_clamped_mean_ms=clamped_mean,
+            latency_effective_last_ms=latency_last,
+            latency_effective_p95_ms=latency_p95,
+            latency_effective_mean_ms=latency_mean,
         )

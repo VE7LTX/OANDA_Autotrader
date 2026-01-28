@@ -27,4 +27,12 @@ $dashArgsList = @(
 $dashArgsList += $dashArgs
 Start-Process -FilePath "powershell" -ArgumentList $dashArgsList | Out-Null
 
+# Launch worker guard (keeps trainer/scorer alive)
+Start-Process -FilePath "powershell" -ArgumentList @(
+    "-NoProfile",
+    "-ExecutionPolicy", "Bypass",
+    "-File", (Join-Path $root "scripts\guard_workers.ps1"),
+    "-WorkingDir", $root
+) | Out-Null
+
 Write-Host "Launch complete."

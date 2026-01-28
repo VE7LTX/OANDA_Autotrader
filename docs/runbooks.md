@@ -87,6 +87,12 @@ Optional environment overrides:
 - OANDA_DASHBOARD_PRED_RETRAIN_INTERVAL=60
 - OANDA_DASHBOARD_SCORE_EVERY=10
 
+## Full stack (capture + dashboard + guard)
+Launch everything with a watchdog to keep trainer/scorer alive:
+```powershell
+scripts\launch_all.ps1
+```
+
 ## Retrain gate (decision check)
 Print the retrain gate decision without training:
 ```bash

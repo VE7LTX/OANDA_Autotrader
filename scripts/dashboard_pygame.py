@@ -928,8 +928,17 @@ def main() -> None:
         pred_high = None
         pred_recent = False
         pred_record = preds if preds and "horizon" in preds else None
+        pred_file_age = None
+        if os.path.exists(preds_path):
+            pred_file_age = max(0.0, time.time() - os.path.getmtime(preds_path))
+        score_file_age = None
+        if os.path.exists(scores_path):
+            score_file_age = max(0.0, time.time() - os.path.getmtime(scores_path))
         pred_dt = _parse_timestamp(pred_record.get("ts")) if pred_record else None
         last_candle_dt = _parse_timestamp(last_candle_ts) if last_candle_ts else None
+        candle_stream_age = None
+        if last_candle_dt:
+            candle_stream_age = max(0.0, time.time() - last_candle_dt.timestamp())
         if pred_dt:
             pred_ts_label = pred_dt.strftime("%H:%M:%S")
             pred_age = time.time() - pred_dt.timestamp()
@@ -960,6 +969,7 @@ def main() -> None:
         else:
             price_min = 0.0
             price_max = 1.0
+        pred_autoscale = _env_bool("OANDA_DASHBOARD_PRED_AUTOSCALE", False)
         if pred_record:
             if not pred_recent:
                 pred_status = "PRED: stale"
@@ -971,6 +981,12 @@ def main() -> None:
                 if lows and highs and mean_vals:
                     pred_low = min(lows)
                     pred_high = max(highs)
+                    if pred_autoscale:
+                        price_min = min(price_min, pred_low)
+                        price_max = max(price_max, pred_high)
+                        pad = max((price_max - price_min) * 0.05, price_max * 0.0005)
+                        price_min -= pad
+                        price_max += pad
                     pred_in_view = pred_low <= price_max and pred_high >= price_min
                     pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
                     pred_points = mean_vals if pred_in_view else []
@@ -981,8 +997,13 @@ def main() -> None:
         elif pred_status == "PRED: --":
             pred_hint = "prediction file missing"
 
-        candle_status = "OK" if candle_file_age is not None and candle_file_age <= candles_fresh_s else "STALE"
-        candle_age_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
+        candle_status = "OK"
+        if candle_stream_age is not None:
+            candle_status = "OK" if candle_stream_age <= candles_fresh_s else "STALE"
+        elif candle_file_age is not None:
+            candle_status = "OK" if candle_file_age <= candles_fresh_s else "STALE"
+        candle_age_label = f"{candle_stream_age:.1f}s" if candle_stream_age is not None else "--"
+        candle_file_label = f"{candle_file_age:.1f}s" if candle_file_age is not None else "--"
         ae_text = "--"
         if ae_status:
             parts = []
@@ -998,16 +1019,26 @@ def main() -> None:
                 parts.append(f"ts {ae_status['ts']}")
             ae_text = " | ".join(parts) if parts else "--"
 
+        pred_delta_pips = "--"
+        if pred_base is not None and last_close is not None:
+            pred_delta_pips = f"{(pred_base - last_close) / 0.0001:.1f}p"
+        scores_status = "OK" if scores else "STALE"
+        scores_age_label = f"{score_file_age:.1f}s" if score_file_age is not None else "--"
+        pred_age_label = f"{pred_file_age:.1f}s" if pred_file_age is not None else "--"
+
         right_items = [
             ("P&L", pl_text),
             ("Balance", bal_text),
-            ("Candles", f"{candle_status} age={candle_age_label}"),
+            ("Candles", f"{candle_status} stream={candle_age_label} file={candle_file_label}"),
             ("Pred status", pred_status),
+            ("Pred age", pred_age_label),
             ("Pred ts", pred_ts_label),
             ("Pred base", _fmt_float(pred_base)),
+            ("Pred delta", pred_delta_pips),
             ("Pred p1", _fmt_float(pred_step1)),
             ("Pred p12", _fmt_float(pred_stepN)),
             ("Pred low/high", f"{_fmt_float(pred_low)} / {_fmt_float(pred_high)}"),
+            ("Scores", f"{scores_status} age={scores_age_label}"),
             ("Coverage", coverage),
             ("MAE", mae),
             ("AE status", ae_text),

@@ -947,6 +947,34 @@ def main() -> None:
                 pred_low = min(item.get("low") for item in horizon if item.get("low") is not None)
                 pred_high = max(item.get("high") for item in horizon if item.get("high") is not None)
 
+        price_vals = []
+        for c in candles:
+            price_vals.extend([c["l"], c["h"]])
+        pred_points = []
+        if price_vals:
+            price_min = min(price_vals)
+            price_max = max(price_vals)
+            pad = max((price_max - price_min) * 0.10, price_max * 0.001)
+            price_min -= pad
+            price_max += pad
+        else:
+            price_min = 0.0
+            price_max = 1.0
+        if pred_record:
+            if not pred_recent:
+                pred_status = "PRED: stale"
+            else:
+                horizon = pred_record.get("horizon") or []
+                lows = [item.get("low") for item in horizon if item.get("low") is not None]
+                highs = [item.get("high") for item in horizon if item.get("high") is not None]
+                mean_vals = [item.get("mean") for item in horizon if item.get("mean") is not None]
+                if lows and highs and mean_vals:
+                    pred_low = min(lows)
+                    pred_high = max(highs)
+                    pred_in_view = pred_low <= price_max and pred_high >= price_min
+                    pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
+                    pred_points = mean_vals if pred_in_view else []
+
         pred_hint = ""
         if pred_status == "PRED: stale":
             pred_hint = "prediction job not running / stuck"
@@ -1055,40 +1083,6 @@ def main() -> None:
                         pygame.Rect(x - band_rect.left, band_rect.height - red_h - green_h, step_px, green_h),
                     )
             screen.blit(band_surface, (band_rect.left, band_rect.top))
-        price_vals = []
-        for c in candles:
-            price_vals.extend([c["l"], c["h"]])
-        pred_points = []
-        if price_vals:
-            price_min = min(price_vals)
-            price_max = max(price_vals)
-            pad = max((price_max - price_min) * 0.10, price_max * 0.001)
-            price_min -= pad
-            price_max += pad
-        else:
-            price_min = 0.0
-            price_max = 1.0
-        if pred_record:
-            if not pred_recent:
-                pred_status = "PRED: stale"
-            else:
-                horizon = pred_record.get("horizon") or []
-                lows = [item.get("low") for item in horizon if item.get("low") is not None]
-                highs = [item.get("high") for item in horizon if item.get("high") is not None]
-                mean_vals = [item.get("mean") for item in horizon if item.get("mean") is not None]
-                if lows and highs and mean_vals:
-                    pred_low = min(lows)
-                    pred_high = max(highs)
-                    pred_in_view = pred_low <= price_max and pred_high >= price_min
-                    pred_status = "PRED: ok" if pred_in_view else "PRED: offscale"
-                    pred_points = mean_vals if pred_in_view else []
-
-        line7 = font.render(
-            f"pred_low/high: {_fmt_float(pred_low)} / {_fmt_float(pred_high)}  price_min/max: {_fmt_float(price_min)} / {_fmt_float(price_max)}",
-            True,
-            (200, 200, 200),
-        )
-        screen.blit(line7, (padding, padding + line_h * 7))
         hit_map = {}
         if scores and candles:
             results = scores.get("results") or []

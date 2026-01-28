@@ -13,6 +13,10 @@ Param(
 
 $root = if ($WorkingDir) { $WorkingDir } else { Split-Path -Parent $PSScriptRoot }
 Set-Location $root
+$predOut = Join-Path $root "data/prediction_runner.out"
+$predErr = Join-Path $root "data/prediction_runner.err"
+$scoreOut = Join-Path $root "data/score_runner.out"
+$scoreErr = Join-Path $root "data/score_runner.err"
 
 function Get-FileAgeSeconds([string]$Path) {
     if (-not (Test-Path $Path)) { return $null }
@@ -25,15 +29,20 @@ function Get-ProcessByPattern([string]$pattern) {
         Where-Object { $_.CommandLine -match $pattern }
 }
 
-function Start-Trainer {
-    Start-Process -FilePath "python" -WindowStyle Hidden -ArgumentList @(
+function Start-Trainer([switch]$Force) {
+    $args = @(
         "scripts/train_autoencoder_loop.py",
         "--features", $FeaturesPath,
         "--retrain-interval", "$PredRetrainInterval",
         "--epochs", "$PredEpochs",
         "--horizon", "$PredHorizon",
         "--interval-secs", "$PredIntervalSecs"
-    ) -WorkingDirectory $root | Out-Null
+    )
+    if ($Force) {
+        $args += "--force-retrain"
+    }
+    Start-Process -FilePath "python" -WindowStyle Hidden -ArgumentList $args -WorkingDirectory $root `
+        -RedirectStandardOutput $predOut -RedirectStandardError $predErr | Out-Null
 }
 
 function Start-Scorer {
@@ -41,7 +50,7 @@ function Start-Scorer {
         "scripts/score_predictions.py",
         "--watch",
         "--every", "$ScoreEverySeconds"
-    ) -WorkingDirectory $root | Out-Null
+    ) -WorkingDirectory $root -RedirectStandardOutput $scoreOut -RedirectStandardError $scoreErr | Out-Null
 }
 
 while ($true) {
@@ -51,11 +60,20 @@ while ($true) {
     $trainerProcs = @(Get-ProcessByPattern "train_autoencoder_loop.py")
     $scorerProcs = @(Get-ProcessByPattern "score_predictions.py")
 
+    if ($trainerProcs.Count -gt 1) {
+        $trainerProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $trainerProcs = @()
+    }
+    if ($scorerProcs.Count -gt 1) {
+        $scorerProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        $scorerProcs = @()
+    }
+
     if ($predAge -eq $null -or $predAge -gt $PredStaleSeconds) {
         if ($trainerProcs.Count -gt 0) {
             $trainerProcs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         }
-        Start-Trainer
+        Start-Trainer -Force
     } elseif ($trainerProcs.Count -eq 0) {
         Start-Trainer
     }

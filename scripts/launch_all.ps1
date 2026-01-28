@@ -19,8 +19,8 @@ if ($Clean) {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
-# Launch capture (console so Ctrl+C is possible if run directly)
-Start-Process -FilePath "powershell" -ArgumentList @(
+# Launch capture (hidden to avoid extra windows)
+Start-Process -FilePath "powershell" -WindowStyle Hidden -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", (Join-Path $root "scripts\launch_capture.ps1"),
@@ -39,7 +39,7 @@ $dashArgsList += $dashArgs
 Start-Process -FilePath "powershell" -ArgumentList $dashArgsList | Out-Null
 
 # Launch worker guard (keeps trainer/scorer alive)
-Start-Process -FilePath "powershell" -ArgumentList @(
+Start-Process -FilePath "powershell" -WindowStyle Hidden -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
     "-File", (Join-Path $root "scripts\guard_workers.ps1"),

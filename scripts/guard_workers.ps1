@@ -26,7 +26,7 @@ function Get-ProcessByPattern([string]$pattern) {
 }
 
 function Start-Trainer {
-    Start-Process -FilePath "python" -ArgumentList @(
+    Start-Process -FilePath "python" -WindowStyle Hidden -ArgumentList @(
         "scripts/train_autoencoder_loop.py",
         "--features", $FeaturesPath,
         "--retrain-interval", "$PredRetrainInterval",
@@ -37,7 +37,7 @@ function Start-Trainer {
 }
 
 function Start-Scorer {
-    Start-Process -FilePath "python" -ArgumentList @(
+    Start-Process -FilePath "python" -WindowStyle Hidden -ArgumentList @(
         "scripts/score_predictions.py",
         "--watch",
         "--every", "$ScoreEverySeconds"

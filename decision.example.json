@@ -1,0 +1,12 @@
+{
+  "action": "buy",
+  "instrument": "USD_CAD",
+  "units": 100,
+  "confidence": 0.62,
+  "reason": "example_action_for_json_file_provider",
+  "stop_loss_price": "1.35000",
+  "take_profit_price": "1.36000",
+  "metadata": {
+    "source": "example"
+  }
+}

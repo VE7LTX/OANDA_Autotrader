@@ -1,0 +1,10 @@
+# requirements.txt
+python-dotenv>=0.19.0
+requests>=2.25.0
+websockets>=10.0     # For streaming
+rich>=10.0          # Optional: For better console output
+textual>=0.1.18     # Optional: For TUI
+pytest>=6.2.0
+requests-mock>=1.9.3
+pandas>=2.2
+matplotlib>=3.9

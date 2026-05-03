@@ -1,0 +1,46 @@
+oanda_sdk/
+├── .env
+├── config.py
+├── client.py
+├── requirements.txt
+├── accounts/
+│   └── __init__.py
+│   └── handlers.py
+├── models/
+│   └── __init__.py
+│   └── base.py
+│   └── account.py
+├── orders/
+│   └── __init__.py
+│   # ... (other handlers)
+├── trades/
+│   └── __init__.py
+│   # ...
+├── positions/
+│   └── __init__.py
+│   # ...
+├── transactions/
+│   └── __init__.py
+│   # ...
+├── pricing/
+│   └── __init__.py
+│   # ...
+├── instruments/
+│   └── __init__.py
+│   # ...
+├── utils/
+│   └── __init__.py
+│   └── decorators.py
+│   └── exceptions.py
+│   └── latency.py
+│   └── parser.py # We might integrate parsing into models or handlers initially
+├── gui/
+│   └── __init__.py
+│   # ... (TUI components)
+├── strategies/
+│   └── __init__.py
+│   # ... (Bot logic)
+├── examples/
+│   └── __init__.py
+│   # ... (Test scripts)
+└── stream_manager.py

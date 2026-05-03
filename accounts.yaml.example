@@ -1,0 +1,17 @@
+# accounts.yaml
+accounts:
+  demo:
+    environment: FXPRACTICE
+    currency: CAD
+    accounts:
+      - name: Primary
+        type: primary
+        account_id: "101-002-0000000-000"
+
+  live:
+    environment: FXTRADE
+    currency: CAD
+    accounts:
+      - name: Primary
+        type: primary
+        account_id: "001-002-0000000-001"

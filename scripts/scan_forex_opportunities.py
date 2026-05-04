@@ -89,9 +89,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--long-score-threshold", type=float, default=3.0)
     parser.add_argument("--short-score-threshold", type=float, default=1.75)
     parser.add_argument("--regime-score-threshold", type=float, default=1.25)
+    parser.add_argument("--exit-long-score-threshold", type=float, default=2.0)
+    parser.add_argument("--exit-short-score-threshold", type=float, default=1.5)
+    parser.add_argument("--exit-regime-score-threshold", type=float, default=1.0)
     parser.add_argument("--trailing-atr-multiple", type=float, default=0.75)
     parser.add_argument("--break-even-atr-multiple", type=float, default=0.5)
     parser.add_argument("--max-hold-candles", type=int, default=18)
+    parser.add_argument("--exit-trailing-atr-multiple", type=float, default=0.75)
+    parser.add_argument("--exit-break-even-atr-multiple", type=float, default=0.5)
+    parser.add_argument("--exit-max-hold-candles", type=int, default=18)
     parser.add_argument("--max-open-trades", type=int, default=1)
     parser.add_argument("--max-units", type=int, default=100)
     parser.add_argument("--min-score", type=float, default=0.0)
@@ -159,6 +165,23 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         break_even_atr_multiple=args.break_even_atr_multiple,
         max_hold_candles=args.max_hold_candles,
     )
+    exit_strategy = StrategyConfig(
+        instrument=args.account,  # placeholder; overridden per instrument below
+        fast_window=args.fast_window,
+        slow_window=args.slow_window,
+        units=args.max_units,
+        min_separation=strategy.min_separation,
+        atr_period=strategy.atr_period,
+        atr_stop_multiple=strategy.atr_stop_multiple,
+        atr_target_multiple=strategy.atr_target_multiple,
+        risk_per_trade_fraction=strategy.risk_per_trade_fraction,
+        long_score_threshold=args.exit_long_score_threshold,
+        short_score_threshold=args.exit_short_score_threshold,
+        regime_score_threshold=args.exit_regime_score_threshold,
+        trailing_atr_multiple=args.exit_trailing_atr_multiple,
+        break_even_atr_multiple=args.exit_break_even_atr_multiple,
+        max_hold_candles=args.exit_max_hold_candles,
+    )
 
     for instrument in instruments:
         if not args.include_held and instrument in held:
@@ -222,7 +245,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 snapshot=snapshot,
                 instruments=instruments,
                 args=args,
-                strategy=strategy,
+                strategy=exit_strategy,
                 instruments_client=instruments_client,
             )
         )

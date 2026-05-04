@@ -129,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-trailing-atr-multiple", type=float, default=0.75)
     parser.add_argument("--exit-break-even-atr-multiple", type=float, default=0.5)
     parser.add_argument("--exit-max-hold-candles", type=int, default=18)
-    parser.add_argument("--max-open-trades", type=int, default=3)
+    parser.add_argument("--max-open-trades", type=int, default=5)
     parser.add_argument("--max-units", type=int, default=100)
     parser.add_argument("--max-gross-position-units", type=int, default=300)
     parser.add_argument("--max-currency-gross-units", type=int, default=200)
@@ -141,7 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--majors-only", action="store_true", default=True, help="Limit scanning to the most liquid major FX pairs.")
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
     parser.add_argument("--min-submit-score", type=float, default=5.0)
-    parser.add_argument("--max-new-trades", type=int, default=3)
+    parser.add_argument("--max-new-trades", type=int, default=5)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
@@ -298,6 +298,8 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "held_positions": sorted(held),
         "exit_opportunities": managed_actions,
         "entry_opportunities": entry_candidates,
+        "long_opportunities": [item for item in entry_candidates if item.get("action") == "buy"],
+        "short_opportunities": [item for item in entry_candidates if item.get("action") == "sell"],
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -319,6 +321,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         Path(args.audit_path),
         cycle=cycle,
         app_config=app_config,
+        summary=summary,
         payload=payload,
         snapshot=snapshot,
         candidates=candidates,
@@ -327,6 +330,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         Path(args.state_path),
         cycle=cycle,
         app_config=app_config,
+        summary=summary,
         payload=payload,
         snapshot=snapshot,
         candidates=candidates,
@@ -659,6 +663,7 @@ def write_audit_record(
     *,
     cycle: int,
     app_config,
+    summary,
     payload: dict[str, object],
     snapshot,
     candidates: list[dict[str, object]],
@@ -679,6 +684,7 @@ def write_audit_record(
         "health": {"ok": True, "reasons": [], "details": {}},
         "action": submission or top,
         "result": submission.get("result") if isinstance(submission, dict) else None,
+        "account_summary": _compact_account_summary(summary),
         "snapshot": {
             "nav": snapshot.nav,
             "balance": snapshot.balance,
@@ -697,32 +703,31 @@ def write_state_record(
     *,
     cycle: int,
     app_config,
+    summary,
     payload: dict[str, object],
     snapshot,
     candidates: list[dict[str, object]],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    previous_state = {}
+    if path.exists():
+        try:
+            previous_state = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            previous_state = {}
+    account_summary = _compact_account_summary(summary)
+    balance = account_summary.get("balance")
+    nav = account_summary.get("nav")
+    session_start_balance = previous_state.get("session_start_balance", balance)
+    session_start_nav = previous_state.get("session_start_nav", nav)
+    realized_pnl_session = None
+    if balance is not None and session_start_balance is not None:
+        realized_pnl_session = float(balance) - float(session_start_balance)
+    unrealized_pnl = None
+    if nav is not None and balance is not None:
+        unrealized_pnl = float(nav) - float(balance)
     active_positions = {name: units for name, units in snapshot.positions_by_instrument.items() if units}
-    current_position = None
-    if len(active_positions) == 1:
-        instrument, units = next(iter(active_positions.items()))
-        current_position = {
-            "instrument": instrument,
-            "side": "long" if units > 0 else "short",
-            "units": abs(units),
-            "entry_price": None,
-            "peak_price": None,
-            "trough_price": None,
-        }
-    elif active_positions:
-        current_position = {
-            "instrument": "multiple",
-            "side": "mixed",
-            "units": sum(abs(units) for units in active_positions.values()),
-            "entry_price": None,
-            "peak_price": None,
-            "trough_price": None,
-        }
+    current_position = _compact_current_position(active_positions)
     record = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "cycle": cycle,
@@ -733,10 +738,17 @@ def write_state_record(
         else "watching",
         "consecutive_failures": 0,
         "current_position": current_position,
-        "realized_pnl_day": 0.0,
-        "realized_pnl_week": 0.0,
+        "realized_pnl_day": realized_pnl_session if realized_pnl_session is not None else 0.0,
+        "realized_pnl_week": realized_pnl_session if realized_pnl_session is not None else 0.0,
+        "unrealized_pnl": unrealized_pnl if unrealized_pnl is not None else 0.0,
+        "session_start_balance": session_start_balance,
+        "session_start_nav": session_start_nav,
         "open_trade_count": snapshot.open_trade_count,
         "positions_by_instrument": snapshot.positions_by_instrument,
+        "active_positions": [
+            {"instrument": name, "units": units, "side": "long" if units > 0 else "short"}
+            for name, units in sorted(active_positions.items())
+        ],
         "latest_candidates": candidates[:10],
         "snapshot": {
             "nav": snapshot.nav,
@@ -747,6 +759,49 @@ def write_state_record(
         "submission": payload.get("submission"),
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def _compact_account_summary(summary) -> dict[str, object]:
+    if summary is None:
+        return {}
+    account = summary.get("account", {}) if isinstance(summary, dict) else {}
+    return {
+        "balance": _safe_number(account.get("balance")),
+        "nav": _safe_number(account.get("NAV") or account.get("nav")),
+        "open_trade_count": _safe_number(account.get("openTradeCount")),
+    }
+
+
+def _compact_current_position(active_positions: dict[str, int]) -> dict[str, object] | None:
+    if not active_positions:
+        return None
+    if len(active_positions) == 1:
+        instrument, units = next(iter(active_positions.items()))
+        return {
+            "instrument": instrument,
+            "side": "long" if units > 0 else "short",
+            "units": abs(units),
+            "entry_price": None,
+            "peak_price": None,
+            "trough_price": None,
+        }
+    return {
+        "instrument": "multiple",
+        "side": "mixed",
+        "units": sum(abs(units) for units in active_positions.values()),
+        "entry_price": None,
+        "peak_price": None,
+        "trough_price": None,
+    }
+
+
+def _safe_number(value):
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

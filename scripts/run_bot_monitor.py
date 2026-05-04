@@ -140,17 +140,25 @@ class MonitorApp(tk.Tk):
         ).pack(side="right")
 
         self._status_pills(scroll_frame)
-        self._card(scroll_frame, "Cycle Summary", self.summary_var)
-        self._card(scroll_frame, "Health Gate", self.health_var)
-        self._card(scroll_frame, "Latest Action", self.action_var)
-        self._card(scroll_frame, "Position State", self.position_var)
-        self._card(scroll_frame, "Runtime State", self.state_var)
-        self.watchlist_frame = ttk.Frame(scroll_frame, style="Card.TFrame", padding=14)
-        self.watchlist_frame.pack(fill="x", pady=6)
-        self.watchlist_title = ttk.Label(self.watchlist_frame, text="Watchlist", style="Sub.TLabel")
-        self.watchlist_title.pack(anchor="w")
-        self.watchlist_container = tk.Frame(self.watchlist_frame, bg="#111827")
-        self.watchlist_container.pack(fill="x", pady=(6, 0))
+
+        cards_frame = tk.Frame(scroll_frame, bg="#0f172a")
+        cards_frame.pack(fill="x", pady=6)
+        for col in range(3):
+            cards_frame.grid_columnconfigure(col, weight=1, uniform="cards")
+        self._card_grid(cards_frame, 0, 0, "Cycle Summary", self.summary_var)
+        self._card_grid(cards_frame, 0, 1, "Health Gate", self.health_var)
+        self._card_grid(cards_frame, 0, 2, "Latest Action", self.action_var)
+        self._card_grid(cards_frame, 1, 0, "Position State", self.position_var)
+        self._card_grid(cards_frame, 1, 1, "Runtime State", self.state_var)
+        self._card_grid(cards_frame, 1, 2, "Portfolio", self.state_var)
+
+        watchlists_grid = tk.Frame(scroll_frame, bg="#0f172a")
+        watchlists_grid.pack(fill="x", pady=6)
+        for col in range(3):
+            watchlists_grid.grid_columnconfigure(col, weight=1, uniform="watchlists")
+        self.watchlist_frame = self._watchlist_panel(watchlists_grid, 0, 0, "Watchlist")
+        self.long_watchlist_frame = self._watchlist_panel(watchlists_grid, 0, 1, "Long Watchlist")
+        self.short_watchlist_frame = self._watchlist_panel(watchlists_grid, 0, 2, "Short Watchlist")
 
     def _status_pills(self, parent: tk.Widget) -> None:
         pill_row = tk.Frame(parent, bg="#0f172a")
@@ -188,6 +196,39 @@ class MonitorApp(tk.Tk):
             wraplength=980,
         ).pack(fill="x", pady=(6, 0))
 
+    def _card_grid(self, parent: tk.Widget, row: int, col: int, title: str, variable: tk.StringVar) -> None:
+        frame = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        frame.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        ttk.Label(frame, text=title, style="Sub.TLabel").pack(anchor="w")
+        tk.Label(
+            frame,
+            textvariable=variable,
+            justify="left",
+            anchor="w",
+            bg="#111827",
+            fg="#f8fafc",
+            font=("Consolas", 10),
+            wraplength=340,
+        ).pack(fill="x", pady=(6, 0))
+
+    def _watchlist_panel(self, parent: tk.Widget, row: int, col: int, title: str) -> ttk.Frame:
+        frame = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        frame.grid(row=row, column=col, sticky="nsew", padx=6, pady=6)
+        label = ttk.Label(frame, text=title, style="Sub.TLabel")
+        label.pack(anchor="w")
+        container = tk.Frame(frame, bg="#111827")
+        container.pack(fill="x", pady=(6, 0))
+        if title == "Watchlist":
+            self.watchlist_title = label
+            self.watchlist_container = container
+        elif title == "Long Watchlist":
+            self.long_watchlist_title = label
+            self.long_watchlist_container = container
+        else:
+            self.short_watchlist_title = label
+            self.short_watchlist_container = container
+        return frame
+
     def refresh(self) -> None:
         audit = read_last_jsonl(self.audit_path)
         state = read_json(self.state_path)
@@ -211,6 +252,7 @@ class MonitorApp(tk.Tk):
         self.state_var.set(format_state_summary(state or {}))
         self._update_pills(audit, blocked, state or {})
         self._render_watchlist(scan or {})
+        self._render_side_watchlists(scan or {})
         self.after(2000, self.refresh)
 
     def _render_watchlist(self, scan: dict) -> None:
@@ -244,6 +286,59 @@ class MonitorApp(tk.Tk):
             )
             tk.Label(
                 self.watchlist_container,
+                text=text,
+                bg=color,
+                fg="#f8fafc",
+                font=("Consolas", 10),
+                anchor="w",
+                justify="left",
+            ).pack(fill="x", pady=2)
+
+    def _render_side_watchlists(self, scan: dict) -> None:
+        self._render_side_watchlist(
+            self.long_watchlist_container,
+            self.long_watchlist_title,
+            scan.get("long_opportunities") or [],
+            "LONG",
+            "#166534",
+        )
+        self._render_side_watchlist(
+            self.short_watchlist_container,
+            self.short_watchlist_title,
+            scan.get("short_opportunities") or [],
+            "SHORT",
+            "#1d4ed8",
+        )
+
+    def _render_side_watchlist(
+        self,
+        container: tk.Widget,
+        title: ttk.Label,
+        rows: list[dict],
+        label: str,
+        color: str,
+    ) -> None:
+        for child in container.winfo_children():
+            child.destroy()
+        title.configure(text=f"{label} Watchlist ({len(rows)})")
+        if not rows:
+            tk.Label(
+                container,
+                text="No candidates",
+                bg="#111827",
+                fg="#f8fafc",
+                font=("Consolas", 10),
+                anchor="w",
+                justify="left",
+            ).pack(fill="x")
+            return
+        for row in rows[:5]:
+            text = (
+                f"{row.get('instrument')}  {str(row.get('action', 'n/a')).upper()}  "
+                f"score {float(row.get('score', 0.0)):.3f}  reason {row.get('reason', 'n/a')}"
+            )
+            tk.Label(
+                container,
                 text=text,
                 bg=color,
                 fg="#f8fafc",
@@ -298,17 +393,25 @@ def format_snapshot_summary(snapshot: dict) -> str:
         [
             f"NAV: {snapshot.get('nav', 'n/a')}  Balance: {snapshot.get('balance', 'n/a')}",
             f"Open trades: {snapshot.get('open_trade_count', 'n/a')}  Positions: {active_positions}",
+            f"Unrealized: {snapshot.get('unrealized_pnl', 'n/a')}  Realized: {snapshot.get('realized_pnl_day', 'n/a')}",
         ]
     )
 
 
 def format_state_summary(state: dict) -> str:
     position = state.get("current_position") or {}
+    active_positions = state.get("active_positions") or []
+    active_text = ", ".join(
+        f"{item.get('instrument', 'n/a')}:{item.get('side', 'n/a')}:{item.get('units', 'n/a')}"
+        for item in active_positions
+    ) or "none"
     if not position:
         return "\n".join(
             [
                 f"Failures: {state.get('consecutive_failures', 'n/a')}  Last action: {state.get('last_action', 'n/a')}",
                 "Current position: none",
+                f"Active positions: {active_text}",
+                f"Realized PnL: {state.get('realized_pnl_day', 'n/a')}  Unrealized PnL: {state.get('unrealized_pnl', 'n/a')}",
             ]
         )
     return "\n".join(
@@ -316,6 +419,8 @@ def format_state_summary(state: dict) -> str:
             f"Failures: {state.get('consecutive_failures', 'n/a')}  Last action: {state.get('last_action', 'n/a')}",
             f"Current position: {position.get('side', 'n/a')} {position.get('units', 'n/a')} {position.get('instrument', 'n/a')}",
             f"Entry: {position.get('entry_price', 'n/a')}  Peak: {position.get('peak_price', 'n/a')}  Trough: {position.get('trough_price', 'n/a')}",
+            f"Active positions: {active_text}",
+            f"Realized PnL: {state.get('realized_pnl_day', 'n/a')}  Unrealized PnL: {state.get('unrealized_pnl', 'n/a')}",
         ]
     )
 
@@ -343,7 +448,8 @@ def _signal_label(audit: dict) -> str:
 def _pnl_label(state: dict) -> str:
     day = state.get("realized_pnl_day", 0.0)
     week = state.get("realized_pnl_week", 0.0)
-    return f"day {day:.2f} | week {week:.2f}"
+    unrealized = state.get("unrealized_pnl", 0.0)
+    return f"day {day:.2f} | week {week:.2f} | uPnL {unrealized:.2f}"
 
 
 def _set_pill(pill: tk.Label, prefix: str, text: str, color: str) -> None:

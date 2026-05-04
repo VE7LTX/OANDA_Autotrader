@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.run_bot_monitor import classify_status, format_block, read_json, read_last_jsonl
+from scripts.run_bot_monitor import classify_status, format_block, format_snapshot_summary, read_json, read_last_jsonl
 
 
 def test_read_jsonl_last_line(tmp_path) -> None:
@@ -36,3 +36,18 @@ def test_classify_status_distinguishes_cooldown_and_risk() -> None:
     assert classify_status({"blocked": ["regime_filter_blocked"]}, ["regime_filter_blocked"]) == "RISK BLOCKED"
     assert classify_status({"error": "boom"}, []) == "ERROR"
     assert classify_status({}, []) == "READY"
+
+
+def test_format_snapshot_summary_includes_pnl() -> None:
+    summary = format_snapshot_summary(
+        {
+            "nav": 10050.0,
+            "balance": 10000.0,
+            "open_trade_count": 2,
+            "positions_by_instrument": {"GBP_USD": -100, "EUR_USD": 100},
+            "unrealized_pnl": 50.0,
+            "realized_pnl_day": 12.5,
+        }
+    )
+    assert "Unrealized: 50.0" in summary
+    assert "Realized: 12.5" in summary

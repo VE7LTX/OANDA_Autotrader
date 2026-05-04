@@ -2,10 +2,19 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import requests
+
 import scripts.scan_forex_opportunities as scanner
 from oanda_autotrader.execution import TradeAction
 
-from scripts.scan_forex_opportunities import build_trade_action, is_fx_pair, is_major_fx_pair, opportunity_score
+from scripts.scan_forex_opportunities import (
+    build_trade_action,
+    describe_exception,
+    fetch_candles_safe,
+    is_fx_pair,
+    is_major_fx_pair,
+    opportunity_score,
+)
 
 
 def test_opportunity_score_prefers_stronger_trade_signal() -> None:
@@ -79,3 +88,27 @@ def test_evaluate_managed_exit_closes_on_forced_reversal(monkeypatch) -> None:
     assert result["action"] == "close"
     assert result["kind"] == "exit"
     assert result["reason"] == "managed_close_short"
+
+
+def test_fetch_candles_safe_records_and_skips_failures() -> None:
+    class BrokenClient:
+        def get_candles(self, *_args, **_kwargs):
+            raise RuntimeError("gateway timeout")
+
+    errors = []
+    result = fetch_candles_safe(BrokenClient(), "NZD_CAD", granularity="M5", count=120, errors=errors)
+
+    assert result is None
+    assert errors == [{"instrument": "NZD_CAD", "stage": "candles", "error": "gateway timeout"}]
+
+
+def test_describe_exception_includes_response_body() -> None:
+    response = requests.Response()
+    response.status_code = 400
+    response._content = b'{"errorMessage":"bad stop loss"}'
+    exc = requests.HTTPError("400 Client Error", response=response)
+
+    description = describe_exception(exc)
+
+    assert "bad stop loss" in description
+    assert "response=400" in description

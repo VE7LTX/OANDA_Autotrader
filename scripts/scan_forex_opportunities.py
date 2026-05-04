@@ -158,7 +158,12 @@ def main() -> None:
     cycle = 0
     while True:
         cycle += 1
-        run_scan_cycle(args, cycle=cycle)
+        try:
+            run_scan_cycle(args, cycle=cycle)
+        except Exception as exc:
+            if not args.autonomous:
+                raise
+            write_cycle_error(Path(args.audit_path), Path(args.state_path), cycle=cycle, error=describe_exception(exc))
         if not args.autonomous:
             break
         if args.iterations and cycle >= args.iterations:
@@ -188,6 +193,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
     managed_actions = []
+    scan_errors = []
     strategy = StrategyConfig(
         instrument=args.account,  # placeholder; overridden per instrument below
         fast_window=args.fast_window,
@@ -222,12 +228,15 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     for instrument in instruments:
         if not args.include_held and instrument in held:
             continue
-        candles_payload = instruments_client.get_candles(
+        candles_payload = fetch_candles_safe(
+            instruments_client,
             instrument,
-            price="M",
             granularity=args.granularity,
             count=args.count,
+            errors=scan_errors,
         )
+        if candles_payload is None:
+            continue
         candles = candles_payload.get("candles", [])
         if not candles:
             continue
@@ -283,6 +292,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 args=args,
                 strategy=exit_strategy,
                 instruments_client=instruments_client,
+                scan_errors=scan_errors,
             )
         )
 
@@ -300,6 +310,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "entry_opportunities": entry_candidates,
         "long_opportunities": [item for item in entry_candidates if item.get("action") == "buy"],
         "short_opportunities": [item for item in entry_candidates if item.get("action") == "sell"],
+        "scan_errors": scan_errors,
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -395,6 +406,33 @@ def is_major_fx_pair(name: str) -> bool:
     return name in LIQUID_FX_PAIRS
 
 
+def fetch_candles_safe(
+    instruments_client,
+    instrument: str,
+    *,
+    granularity: str,
+    count: int,
+    errors: list[dict[str, object]] | None = None,
+) -> dict[str, object] | None:
+    try:
+        return instruments_client.get_candles(
+            instrument,
+            price="M",
+            granularity=granularity,
+            count=count,
+        )
+    except Exception as exc:
+        if errors is not None:
+            errors.append(
+                {
+                    "instrument": instrument,
+                    "stage": "candles",
+                    "error": describe_exception(exc),
+                }
+            )
+        return None
+
+
 def build_managed_exit_candidates(
     *,
     app_config,
@@ -403,6 +441,7 @@ def build_managed_exit_candidates(
     args: argparse.Namespace,
     strategy: StrategyConfig,
     instruments_client,
+    scan_errors: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     managed: list[dict[str, object]] = []
     for instrument, units in snapshot.positions_by_instrument.items():
@@ -410,12 +449,15 @@ def build_managed_exit_candidates(
             continue
         if instrument not in instruments:
             continue
-        candles_payload = instruments_client.get_candles(
+        candles_payload = fetch_candles_safe(
+            instruments_client,
             instrument,
-            price="M",
             granularity=args.granularity,
             count=args.count,
+            errors=scan_errors,
         )
+        if candles_payload is None:
+            continue
         candles = candles_payload.get("candles", [])
         if not candles:
             continue
@@ -599,7 +641,7 @@ def maybe_submit_candidates(
                 "score": candidate["score"],
                 "reason": candidate["reason"],
                 "dry_run": app_config.environment != "practice",
-                "error": str(exc),
+                "error": describe_exception(exc),
             })
             continue
         submissions.append({
@@ -658,6 +700,54 @@ def build_trade_action(candidate: dict[str, object]):
     )
 
 
+def describe_exception(exc: Exception) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    status = getattr(response, "status_code", None)
+    text = getattr(response, "text", "") or ""
+    if len(text) > 500:
+        text = text[:500] + "..."
+    if text:
+        return f"{exc} | response={status}: {text}"
+    return str(exc)
+
+
+def write_cycle_error(audit_path: Path, state_path: Path, *, cycle: int, error: str) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        "timestamp": now,
+        "cycle": cycle,
+        "environment": "unknown",
+        "dry_run": None,
+        "blocked": ["cycle_error"],
+        "health": {"ok": False, "reasons": ["cycle_error"], "details": {}},
+        "action": {"action": "hold", "reason": "cycle_error"},
+        "error": error,
+    }
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    with audit_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+    previous_state = {}
+    if state_path.exists():
+        try:
+            previous_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            previous_state = {}
+    previous_state.update(
+        {
+            "timestamp": now,
+            "cycle": cycle,
+            "last_action": "cycle_error",
+            "last_error": error,
+            "consecutive_failures": int(previous_state.get("consecutive_failures", 0) or 0) + 1,
+        }
+    )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(previous_state, indent=2), encoding="utf-8")
+
+
 def write_audit_record(
     path: Path,
     *,
@@ -685,6 +775,7 @@ def write_audit_record(
         "action": submission or top,
         "result": submission.get("result") if isinstance(submission, dict) else None,
         "account_summary": _compact_account_summary(summary),
+        "scan_errors": payload.get("scan_errors") or [],
         "snapshot": {
             "nav": snapshot.nav,
             "balance": snapshot.balance,
@@ -749,6 +840,7 @@ def write_state_record(
             {"instrument": name, "units": units, "side": "long" if units > 0 else "short"}
             for name, units in sorted(active_positions.items())
         ],
+        "scan_errors": payload.get("scan_errors") or [],
         "latest_candidates": candidates[:10],
         "snapshot": {
             "nav": snapshot.nav,

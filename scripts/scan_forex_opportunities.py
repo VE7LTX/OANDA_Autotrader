@@ -724,12 +724,27 @@ def build_decision_summary(
         if str(item.get("action") or "").lower() in {"buy", "sell", "close"}
     ]
     if not actionable:
-        return {
+        top = max(candidates, key=lambda item: float(item.get("score", 0.0) or 0.0), default=None)
+        summary = {
             "decision": "watching",
             "reason": "no_actionable_candidates",
             "submitted_count": 0,
             "min_submit_score": args.min_submit_score,
         }
+        if top:
+            summary.update(
+                {
+                    "instrument": top.get("instrument"),
+                    "action": top.get("action"),
+                    "score": float(top.get("score", 0.0) or 0.0),
+                    "filter_reason": top.get("reason"),
+                    "long_score": (top.get("metadata") or {}).get("long_score"),
+                    "short_score": (top.get("metadata") or {}).get("short_score"),
+                    "regime_score": (top.get("metadata") or {}).get("regime_score"),
+                    "rsi": (top.get("metadata") or {}).get("rsi"),
+                }
+            )
+        return summary
 
     top = max(actionable, key=lambda item: float(item.get("score", 0.0) or 0.0))
     top_score = float(top.get("score", 0.0) or 0.0)

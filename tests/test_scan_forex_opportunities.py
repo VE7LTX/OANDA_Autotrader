@@ -215,6 +215,34 @@ def test_decision_summary_reports_submissions() -> None:
     assert summary["instruments"] == ["GBP_USD", "NZD_JPY"]
 
 
+def test_decision_summary_reports_best_watched_candidate() -> None:
+    args = SimpleNamespace(min_submit_score=5.4)
+    candidates = [
+        {
+            "instrument": "USD_JPY",
+            "action": "hold",
+            "score": 2.26,
+            "reason": "regime_filter_hold",
+            "metadata": {"long_score": 1.1, "short_score": 2.85, "regime_score": 1.1, "rsi": 42.0},
+        },
+        {
+            "instrument": "EUR_NZD",
+            "action": "hold",
+            "score": 1.2,
+            "reason": "score_below_threshold",
+            "metadata": {"long_score": 2.0, "short_score": 0.75, "regime_score": 0.6, "rsi": 66.0},
+        },
+    ]
+
+    summary = build_decision_summary(candidates, [], args)
+
+    assert summary["decision"] == "watching"
+    assert summary["reason"] == "no_actionable_candidates"
+    assert summary["instrument"] == "USD_JPY"
+    assert summary["filter_reason"] == "regime_filter_hold"
+    assert summary["short_score"] == 2.85
+
+
 def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
     class FakeEngine:
         policy = SimpleNamespace(

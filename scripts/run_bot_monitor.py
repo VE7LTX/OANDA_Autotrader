@@ -435,8 +435,9 @@ def format_decision_summary(decision: dict) -> str:
     return "\n".join(
         [
             f"Decision: {decision.get('decision', 'n/a')}  Reason: {decision.get('reason', 'n/a')}",
-            f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}",
+            f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}  Filter: {decision.get('filter_reason', 'n/a')}",
             f"Score: {decision.get('score', 'n/a')}  Need: {decision.get('min_submit_score', 'n/a')}  Gap: {decision.get('score_gap', 'n/a')}",
+            f"Long: {decision.get('long_score', 'n/a')}  Short: {decision.get('short_score', 'n/a')}  Regime: {decision.get('regime_score', 'n/a')}  RSI: {decision.get('rsi', 'n/a')}",
             f"Submitted: {decision.get('submitted_count', 0)}  Instruments: {', '.join(decision.get('instruments') or []) or 'none'}",
         ]
     )

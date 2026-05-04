@@ -70,9 +70,16 @@ def test_format_decision_summary_is_human_readable() -> None:
             "score": 5.2,
             "min_submit_score": 5.4,
             "score_gap": 0.2,
+            "filter_reason": "regime_filter_hold",
+            "long_score": 1.1,
+            "short_score": 2.85,
+            "regime_score": 1.1,
+            "rsi": 42.0,
         }
     )
 
     assert "Decision: watching" in summary
     assert "Reason: below_submit_threshold" in summary
     assert "NZD_JPY" in summary
+    assert "Filter: regime_filter_hold" in summary
+    assert "Short: 2.85" in summary

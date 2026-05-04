@@ -29,6 +29,7 @@ def test_is_fx_pair_excludes_non_currency_symbols() -> None:
 
 def test_is_major_fx_pair_filters_liquidity() -> None:
     assert is_major_fx_pair("GBP_USD") is True
+    assert is_major_fx_pair("EUR_GBP") is True
     assert is_major_fx_pair("EUR_NOK") is False
 
 

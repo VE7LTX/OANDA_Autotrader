@@ -74,6 +74,36 @@ FX_CODES = {
     "TRY",
 }
 
+LIQUID_FX_PAIRS = {
+    "AUD_CAD",
+    "AUD_CHF",
+    "AUD_JPY",
+    "AUD_NZD",
+    "AUD_USD",
+    "CAD_CHF",
+    "CAD_JPY",
+    "EUR_AUD",
+    "EUR_CAD",
+    "EUR_CHF",
+    "EUR_GBP",
+    "EUR_JPY",
+    "EUR_NZD",
+    "EUR_USD",
+    "GBP_AUD",
+    "GBP_CAD",
+    "GBP_CHF",
+    "GBP_JPY",
+    "GBP_NZD",
+    "GBP_USD",
+    "NZD_CAD",
+    "NZD_CHF",
+    "NZD_JPY",
+    "NZD_USD",
+    "USD_CAD",
+    "USD_CHF",
+    "USD_JPY",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan tradeable FX pairs and rank opportunities.")
@@ -335,11 +365,9 @@ def is_fx_pair(name: str) -> bool:
 
 
 def is_major_fx_pair(name: str) -> bool:
-    majors = {"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"}
     if not is_fx_pair(name):
         return False
-    base, quote = name.split("_", 1)
-    return base in majors and quote in majors
+    return name in LIQUID_FX_PAIRS
 
 
 def build_managed_exit_candidates(

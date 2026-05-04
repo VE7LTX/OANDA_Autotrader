@@ -132,6 +132,65 @@ def test_engine_rejects_projected_gross_exposure_over_cap(app_config: AppConfig)
         engine.execute(action, snapshot, dry_run=True)
 
 
+def test_engine_rejects_currency_concentration_over_cap(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(
+            allowed_instruments=("USD_CAD",),
+            max_units_per_trade=100,
+            max_gross_position_units=500,
+            max_currency_gross_units=150,
+        ),
+    )
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=2,
+        positions_by_instrument={"EUR_USD": 100, "GBP_USD": 100},
+    )
+    action = TradeAction(
+        action="buy",
+        instrument="USD_CAD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.35000",
+    )
+    with pytest.raises(ValueError, match="Currency exposure limit reached"):
+        engine.execute(action, snapshot, dry_run=True)
+
+
+def test_engine_rejects_currency_correlation_over_cap(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(
+            allowed_instruments=("GBP_USD", "EUR_USD"),
+            max_units_per_trade=100,
+            max_gross_position_units=500,
+            max_currency_gross_units=500,
+            max_currency_positions=1,
+        ),
+    )
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=1,
+        positions_by_instrument={"EUR_USD": 100},
+    )
+    action = TradeAction(
+        action="buy",
+        instrument="GBP_USD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.35000",
+    )
+    with pytest.raises(ValueError, match="Currency correlation limit reached"):
+        engine.execute(action, snapshot, dry_run=True)
+
+
 def test_engine_project_snapshot_tracks_new_positions_and_closes(app_config: AppConfig) -> None:
     engine = PracticeExecutionEngine(
         app_config,

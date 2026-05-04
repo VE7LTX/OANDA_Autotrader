@@ -40,6 +40,8 @@ class RiskPolicy:
     max_units_per_trade: int = 1000
     max_open_trades: int = 3
     max_gross_position_units: int = 300
+    max_currency_gross_units: int = 200
+    max_currency_positions: int = 2
     min_confidence: float = 0.55
     require_stop_loss: bool = True
     time_in_force: str = "FOK"
@@ -51,6 +53,45 @@ class RiskPolicy:
     def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
         projected = self.project_snapshot(snapshot, action)
         return sum(abs(int(units)) for units in projected.positions_by_instrument.values() if units)
+
+    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+        projected = self.project_snapshot(snapshot, action)
+        currency_units = self._currency_gross_from_positions(projected.positions_by_instrument)
+        return sum(currency_units.values())
+
+    def projected_currency_position_count(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+        projected = self.project_snapshot(snapshot, action)
+        currency_counts = self._currency_position_counts(projected.positions_by_instrument)
+        return max(currency_counts.values(), default=0)
+
+    @staticmethod
+    def _currency_gross_from_positions(positions: dict[str, int]) -> dict[str, int]:
+        exposure: dict[str, int] = {}
+        for instrument, units in positions.items():
+            if not units:
+                continue
+            currencies = _instrument_currencies(instrument)
+            if currencies is None:
+                continue
+            base, quote = currencies
+            magnitude = abs(int(units))
+            exposure[base] = exposure.get(base, 0) + magnitude
+            exposure[quote] = exposure.get(quote, 0) + magnitude
+        return exposure
+
+    @staticmethod
+    def _currency_position_counts(positions: dict[str, int]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for instrument, units in positions.items():
+            if not units:
+                continue
+            currencies = _instrument_currencies(instrument)
+            if currencies is None:
+                continue
+            base, quote = currencies
+            counts[base] = counts.get(base, 0) + 1
+            counts[quote] = counts.get(quote, 0) + 1
+        return counts
 
     def project_snapshot(self, snapshot: AccountSnapshot, action: TradeAction) -> AccountSnapshot:
         kind = action.action.lower()
@@ -124,6 +165,12 @@ class PracticeExecutionEngine:
             projected_gross = self.policy.projected_gross_position_units(snapshot, action)
             if projected_gross > self.policy.max_gross_position_units:
                 raise ValueError("Gross position exposure limit reached.")
+            projected_currency_gross = self.policy.projected_currency_gross_units(snapshot, action)
+            if projected_currency_gross > self.policy.max_currency_gross_units:
+                raise ValueError("Currency exposure limit reached.")
+            projected_currency_positions = self.policy.projected_currency_position_count(snapshot, action)
+            if projected_currency_positions > self.policy.max_currency_positions:
+                raise ValueError("Currency correlation limit reached.")
 
     def execute(
         self, action: TradeAction, snapshot: AccountSnapshot, *, dry_run: bool = True
@@ -188,6 +235,9 @@ class PracticeExecutionEngine:
     def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
         return self.policy.projected_gross_position_units(snapshot, action)
 
+    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+        return self.policy.projected_currency_gross_units(snapshot, action)
+
 
 def snapshot_from_account_payload(
     config: AppConfig,
@@ -221,3 +271,13 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _instrument_currencies(instrument: str) -> tuple[str, str] | None:
+    parts = str(instrument or "").split("_", 1)
+    if len(parts) != 2:
+        return None
+    base, quote = parts
+    if len(base) != 3 or len(quote) != 3:
+        return None
+    return base, quote

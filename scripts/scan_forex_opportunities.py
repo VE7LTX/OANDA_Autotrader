@@ -132,6 +132,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-open-trades", type=int, default=3)
     parser.add_argument("--max-units", type=int, default=100)
     parser.add_argument("--max-gross-position-units", type=int, default=300)
+    parser.add_argument("--max-currency-gross-units", type=int, default=200)
+    parser.add_argument("--max-currency-positions", type=int, default=2)
     parser.add_argument("--min-score", type=float, default=0.0)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--output", default="data/forex_opportunity_scan.json")
@@ -554,6 +556,8 @@ def maybe_submit_candidates(
             max_units_per_trade=args.max_units,
             max_open_trades=args.max_open_trades,
             max_gross_position_units=args.max_gross_position_units,
+            max_currency_gross_units=args.max_currency_gross_units,
+            max_currency_positions=args.max_currency_positions,
         ),
     )
     ordered_candidates = sorted(

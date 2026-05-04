@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -10,6 +11,7 @@ from oanda_autotrader.execution import TradeAction
 from scripts.scan_forex_opportunities import (
     build_trade_action,
     describe_exception,
+    entry_throttle_reason,
     fetch_candles_safe,
     is_fx_pair,
     is_major_fx_pair,
@@ -112,3 +114,58 @@ def test_describe_exception_includes_response_body() -> None:
 
     assert "bad stop loss" in description
     assert "response=400" in description
+
+
+def test_entry_throttle_stops_after_session_loss() -> None:
+    args = SimpleNamespace(
+        max_session_loss=1.0,
+        max_trades_per_hour=2,
+        instrument_cooldown_minutes=180,
+        currency_cooldown_minutes=60,
+    )
+    action = TradeAction(action="sell", instrument="EUR_USD", units=100)
+
+    assert entry_throttle_reason(action, [], args, realized_pnl_day=-1.01) == "session_loss_limit"
+
+
+def test_entry_throttle_limits_recent_activity() -> None:
+    args = SimpleNamespace(
+        max_session_loss=10.0,
+        max_trades_per_hour=2,
+        instrument_cooldown_minutes=180,
+        currency_cooldown_minutes=60,
+    )
+    now = datetime.now(timezone.utc)
+    recent = [
+        {"timestamp": (now - timedelta(minutes=10)).isoformat(), "instrument": "EUR_USD"},
+        {"timestamp": (now - timedelta(minutes=20)).isoformat(), "instrument": "GBP_USD"},
+    ]
+    action = TradeAction(action="sell", instrument="AUD_USD", units=100)
+
+    assert entry_throttle_reason(action, recent, args, realized_pnl_day=0.0) == "max_trades_per_hour"
+
+
+def test_entry_throttle_limits_same_instrument() -> None:
+    args = SimpleNamespace(
+        max_session_loss=10.0,
+        max_trades_per_hour=5,
+        instrument_cooldown_minutes=180,
+        currency_cooldown_minutes=0,
+    )
+    recent = [{"timestamp": datetime.now(timezone.utc).isoformat(), "instrument": "EUR_USD"}]
+    action = TradeAction(action="sell", instrument="EUR_USD", units=100)
+
+    assert entry_throttle_reason(action, recent, args, realized_pnl_day=0.0) == "instrument_cooldown"
+
+
+def test_entry_throttle_limits_currency_family() -> None:
+    args = SimpleNamespace(
+        max_session_loss=10.0,
+        max_trades_per_hour=5,
+        instrument_cooldown_minutes=0,
+        currency_cooldown_minutes=60,
+    )
+    recent = [{"timestamp": datetime.now(timezone.utc).isoformat(), "instrument": "EUR_USD"}]
+    action = TradeAction(action="sell", instrument="USD_JPY", units=100)
+
+    assert entry_throttle_reason(action, recent, args, realized_pnl_day=0.0) == "currency_cooldown"

@@ -140,8 +140,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-held", action="store_true")
     parser.add_argument("--majors-only", action="store_true", default=True, help="Limit scanning to the most liquid major FX pairs.")
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
-    parser.add_argument("--min-submit-score", type=float, default=5.0)
+    parser.add_argument("--min-submit-score", type=float, default=5.4)
     parser.add_argument("--max-new-trades", type=int, default=5)
+    parser.add_argument("--max-trades-per-hour", type=int, default=2)
+    parser.add_argument("--instrument-cooldown-minutes", type=int, default=180)
+    parser.add_argument("--currency-cooldown-minutes", type=int, default=60)
+    parser.add_argument("--max-session-loss", type=float, default=1.0)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
@@ -613,6 +617,9 @@ def maybe_submit_candidates(
     projected_snapshot = snapshot
     submissions: list[dict[str, object]] = []
     new_entries_submitted = 0
+    state = load_state_file(Path(args.state_path))
+    recent_entries = list(state.get("recent_entries") or [])
+    realized_pnl_day = float(state.get("realized_pnl_day", 0.0) or 0.0)
     for candidate in ordered_candidates:
         if float(candidate.get("score", 0.0) or 0.0) < args.min_submit_score:
             continue
@@ -630,7 +637,17 @@ def maybe_submit_candidates(
                 continue
             if candidate.get("has_position"):
                 continue
+            throttle_reason = entry_throttle_reason(
+                action,
+                recent_entries,
+                args,
+                realized_pnl_day=realized_pnl_day,
+            )
+            if throttle_reason:
+                candidate["blocked_reason"] = throttle_reason
+                continue
             if not can_submit_entry(engine, projected_snapshot, action):
+                candidate["blocked_reason"] = "risk_policy"
                 continue
         try:
             result = engine.execute(action, projected_snapshot, dry_run=app_config.environment != "practice")
@@ -655,6 +672,14 @@ def maybe_submit_candidates(
         projected_snapshot = engine.project_snapshot(projected_snapshot, action)
         if action.action != "close":
             new_entries_submitted += 1
+            recent_entries.append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "instrument": action.instrument,
+                    "action": action.action,
+                    "units": action.units,
+                }
+            )
     return submissions
 
 
@@ -673,6 +698,76 @@ def can_submit_entry(engine: PracticeExecutionEngine, snapshot, action: TradeAct
         if max(currency_counts.values(), default=0) > engine.policy.max_currency_positions:
             return False
     return True
+
+
+def entry_throttle_reason(
+    action: TradeAction,
+    recent_entries: list[dict[str, object]],
+    args: argparse.Namespace,
+    *,
+    realized_pnl_day: float,
+) -> str | None:
+    if action.action.lower() not in {"buy", "sell"}:
+        return None
+    if realized_pnl_day <= -abs(float(getattr(args, "max_session_loss", 0.0) or 0.0)):
+        return "session_loss_limit"
+
+    now = datetime.now(timezone.utc)
+    active_entries = [
+        entry for entry in recent_entries if entry_age_minutes(entry, now) is not None
+    ]
+    one_hour_entries = [
+        entry for entry in active_entries if (entry_age_minutes(entry, now) or 0.0) <= 60.0
+    ]
+    max_trades_per_hour = int(getattr(args, "max_trades_per_hour", 0) or 0)
+    if max_trades_per_hour > 0 and len(one_hour_entries) >= max_trades_per_hour:
+        return "max_trades_per_hour"
+
+    instrument_cooldown = int(getattr(args, "instrument_cooldown_minutes", 0) or 0)
+    if instrument_cooldown > 0:
+        for entry in active_entries:
+            if entry.get("instrument") == action.instrument and (entry_age_minutes(entry, now) or 0.0) < instrument_cooldown:
+                return "instrument_cooldown"
+
+    currency_cooldown = int(getattr(args, "currency_cooldown_minutes", 0) or 0)
+    action_currencies = set(instrument_currencies(action.instrument) or ())
+    if currency_cooldown > 0 and action_currencies:
+        for entry in active_entries:
+            entry_currencies = set(instrument_currencies(str(entry.get("instrument") or "")) or ())
+            if action_currencies & entry_currencies and (entry_age_minutes(entry, now) or 0.0) < currency_cooldown:
+                return "currency_cooldown"
+    return None
+
+
+def entry_age_minutes(entry: dict[str, object], now: datetime) -> float | None:
+    raw = entry.get("timestamp")
+    if not raw:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except ValueError:
+        return None
+    return max(0.0, (now - timestamp).total_seconds() / 60.0)
+
+
+def instrument_currencies(instrument: str) -> tuple[str, str] | None:
+    parts = str(instrument or "").split("_", 1)
+    if len(parts) != 2:
+        return None
+    base, quote = parts
+    if len(base) != 3 or len(quote) != 3:
+        return None
+    return base, quote
+
+
+def load_state_file(path: Path) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def build_trade_action(candidate: dict[str, object]):
@@ -817,6 +912,25 @@ def write_state_record(
     unrealized_pnl = None
     if nav is not None and balance is not None:
         unrealized_pnl = float(nav) - float(balance)
+    recent_entries = prune_recent_entries(list(previous_state.get("recent_entries") or []))
+    for submission in payload.get("submissions") or []:
+        if not isinstance(submission, dict):
+            continue
+        result = submission.get("result") or {}
+        if not result.get("submitted"):
+            continue
+        action = str(submission.get("action") or "")
+        if action not in {"buy", "sell"}:
+            continue
+        recent_entries.append(
+            {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "instrument": submission.get("instrument"),
+                "action": action,
+                "score": submission.get("score"),
+            }
+        )
+    recent_entries = prune_recent_entries(recent_entries)
     active_positions = {name: units for name, units in snapshot.positions_by_instrument.items() if units}
     current_position = _compact_current_position(active_positions)
     record = {
@@ -834,6 +948,7 @@ def write_state_record(
         "unrealized_pnl": unrealized_pnl if unrealized_pnl is not None else 0.0,
         "session_start_balance": session_start_balance,
         "session_start_nav": session_start_nav,
+        "recent_entries": recent_entries,
         "open_trade_count": snapshot.open_trade_count,
         "positions_by_instrument": snapshot.positions_by_instrument,
         "active_positions": [
@@ -894,6 +1009,18 @@ def _safe_number(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def prune_recent_entries(entries: list[dict[str, object]], *, max_age_hours: int = 24) -> list[dict[str, object]]:
+    now = datetime.now(timezone.utc)
+    pruned: list[dict[str, object]] = []
+    for entry in entries:
+        age = entry_age_minutes(entry, now)
+        if age is None:
+            continue
+        if age <= max_age_hours * 60:
+            pruned.append(entry)
+    return pruned
 
 
 if __name__ == "__main__":

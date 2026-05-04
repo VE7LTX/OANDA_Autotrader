@@ -98,8 +98,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-trailing-atr-multiple", type=float, default=0.75)
     parser.add_argument("--exit-break-even-atr-multiple", type=float, default=0.5)
     parser.add_argument("--exit-max-hold-candles", type=int, default=18)
-    parser.add_argument("--max-open-trades", type=int, default=1)
+    parser.add_argument("--max-open-trades", type=int, default=3)
     parser.add_argument("--max-units", type=int, default=100)
+    parser.add_argument("--max-gross-position-units", type=int, default=300)
     parser.add_argument("--min-score", type=float, default=0.0)
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--output", default="data/forex_opportunity_scan.json")
@@ -107,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--majors-only", action="store_true", default=True, help="Limit scanning to the most liquid major FX pairs.")
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
     parser.add_argument("--min-submit-score", type=float, default=5.0)
-    parser.add_argument("--max-new-trades", type=int, default=1)
+    parser.add_argument("--max-new-trades", type=int, default=3)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
@@ -267,13 +268,14 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     }
 
     if args.submit:
-        submission = maybe_submit_best_candidate(
+        submissions = maybe_submit_candidates(
             app_config=app_config,
             snapshot=snapshot,
             candidates=candidates,
             args=args,
         )
-        payload["submission"] = submission
+        payload["submissions"] = submissions
+        payload["submission"] = submissions[0] if submissions else None
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -287,7 +289,13 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             f"{row['instrument']} | action={row['action']} score={row['score']:.3f} "
             f"reason={row['reason']} confidence={row['confidence']:.2f}"
         )
-    if payload["submission"] is not None:
+    if payload.get("submissions"):
+        for submission in payload["submissions"]:
+            print(
+                f"submitted {submission['instrument']} {submission['action']} "
+                f"score={submission['score']:.3f} dry_run={submission['dry_run']}"
+            )
+    elif payload["submission"] is not None:
         submission = payload["submission"]
         print(
             f"submitted {submission['instrument']} {submission['action']} "
@@ -475,6 +483,22 @@ def maybe_submit_best_candidate(
     candidates: list[dict[str, object]],
     args: argparse.Namespace,
 ) -> dict[str, object] | None:
+    submissions = maybe_submit_candidates(
+        app_config=app_config,
+        snapshot=snapshot,
+        candidates=candidates,
+        args=args,
+    )
+    return submissions[0] if submissions else None
+
+
+def maybe_submit_candidates(
+    *,
+    app_config,
+    snapshot,
+    candidates: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> list[dict[str, object]]:
     engine = PracticeExecutionEngine(
         app_config,
         RiskPolicy(
@@ -482,34 +506,46 @@ def maybe_submit_best_candidate(
             allowed_instruments=tuple(item["instrument"] for item in candidates) or (),
             max_units_per_trade=args.max_units,
             max_open_trades=args.max_open_trades,
+            max_gross_position_units=args.max_gross_position_units,
         ),
     )
     ordered_candidates = sorted(
         candidates,
-        key=lambda item: (str(item.get("action")) == "close", float(item.get("score", 0.0) or 0.0)),
-        reverse=True,
+        key=lambda item: (0 if str(item.get("action")) == "close" else 1, -float(item.get("score", 0.0) or 0.0)),
     )
+    projected_snapshot = snapshot
+    submissions: list[dict[str, object]] = []
+    new_entries_submitted = 0
     for candidate in ordered_candidates:
         if float(candidate.get("score", 0.0) or 0.0) < args.min_submit_score:
             continue
         action = build_trade_action(candidate)
         if action.action == "hold":
             continue
-        if action.action != "close":
-            if int(snapshot.open_trade_count) >= args.max_new_trades:
+        if action.action == "close":
+            current_units = int(projected_snapshot.positions_by_instrument.get(action.instrument, 0) or 0)
+            if current_units == 0:
+                continue
+        else:
+            if new_entries_submitted >= args.max_new_trades:
+                continue
+            if int(projected_snapshot.open_trade_count) >= args.max_open_trades:
                 continue
             if candidate.get("has_position"):
                 continue
-        result = engine.execute(action, snapshot, dry_run=app_config.environment != "practice")
-        return {
+        result = engine.execute(action, projected_snapshot, dry_run=app_config.environment != "practice")
+        submissions.append({
             "instrument": candidate["instrument"],
             "action": action.action,
             "score": candidate["score"],
             "reason": candidate["reason"],
             "dry_run": app_config.environment != "practice",
             "result": result,
-        }
-    return None
+        })
+        projected_snapshot = engine.project_snapshot(projected_snapshot, action)
+        if action.action != "close":
+            new_entries_submitted += 1
+    return submissions
 
 
 def build_trade_action(candidate: dict[str, object]):

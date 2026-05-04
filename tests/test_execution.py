@@ -106,3 +106,56 @@ def test_engine_builds_close_order_from_existing_position(app_config: AppConfig)
     result = engine.execute(action, snapshot, dry_run=True)
     assert result["submitted"] is False
     assert result["order"]["units"] == "-100"
+
+
+def test_engine_rejects_projected_gross_exposure_over_cap(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(allowed_instruments=("USD_CAD",), max_units_per_trade=100, max_gross_position_units=150),
+    )
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=1,
+        positions_by_instrument={"EUR_USD": 100},
+    )
+    action = TradeAction(
+        action="buy",
+        instrument="USD_CAD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.35000",
+    )
+    with pytest.raises(ValueError, match="Gross position exposure limit reached"):
+        engine.execute(action, snapshot, dry_run=True)
+
+
+def test_engine_project_snapshot_tracks_new_positions_and_closes(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(allowed_instruments=("USD_CAD",), max_units_per_trade=100),
+    )
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=1,
+        positions_by_instrument={"USD_CAD": 100},
+    )
+    close_action = TradeAction(action="close", instrument="USD_CAD", confidence=0.7)
+    closed = engine.project_snapshot(snapshot, close_action)
+    assert closed.open_trade_count == 0
+    assert closed.positions_by_instrument["USD_CAD"] == 0
+    buy_action = TradeAction(
+        action="buy",
+        instrument="EUR_USD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.10000",
+    )
+    projected = engine.project_snapshot(closed, buy_action)
+    assert projected.open_trade_count == 1
+    assert projected.positions_by_instrument["EUR_USD"] == 100

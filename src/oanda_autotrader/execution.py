@@ -39,6 +39,7 @@ class RiskPolicy:
     allowed_instruments: tuple[str, ...] = ()
     max_units_per_trade: int = 1000
     max_open_trades: int = 3
+    max_gross_position_units: int = 300
     min_confidence: float = 0.55
     require_stop_loss: bool = True
     time_in_force: str = "FOK"
@@ -46,6 +47,49 @@ class RiskPolicy:
 
     def allows_instrument(self, instrument: str) -> bool:
         return not self.allowed_instruments or instrument in self.allowed_instruments
+
+    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+        projected = self.project_snapshot(snapshot, action)
+        return sum(abs(int(units)) for units in projected.positions_by_instrument.values() if units)
+
+    def project_snapshot(self, snapshot: AccountSnapshot, action: TradeAction) -> AccountSnapshot:
+        kind = action.action.lower()
+        positions = dict(snapshot.positions_by_instrument)
+        open_trade_count = int(snapshot.open_trade_count)
+        if kind == "close":
+            current_units = int(positions.get(action.instrument, 0) or 0)
+            if current_units != 0:
+                positions[action.instrument] = 0
+                open_trade_count = max(0, open_trade_count - 1)
+            return AccountSnapshot(
+                environment=snapshot.environment,
+                account_id=snapshot.account_id,
+                nav=snapshot.nav,
+                balance=snapshot.balance,
+                open_trade_count=open_trade_count,
+                positions_by_instrument=positions,
+            )
+        if kind in {"buy", "sell"}:
+            current_units = int(positions.get(action.instrument, 0) or 0)
+            if current_units == 0:
+                open_trade_count += 1
+                positions[action.instrument] = action.units if kind == "buy" else -action.units
+            elif current_units > 0 and kind == "buy":
+                positions[action.instrument] = current_units + action.units
+            elif current_units < 0 and kind == "sell":
+                positions[action.instrument] = current_units - action.units
+            else:
+                positions[action.instrument] = (
+                    current_units + action.units if current_units > 0 else current_units - action.units
+                )
+        return AccountSnapshot(
+            environment=snapshot.environment,
+            account_id=snapshot.account_id,
+            nav=snapshot.nav,
+            balance=snapshot.balance,
+            open_trade_count=open_trade_count,
+            positions_by_instrument=positions,
+        )
 
 
 class PracticeExecutionEngine:
@@ -76,6 +120,10 @@ class PracticeExecutionEngine:
             raise ValueError("Trade units exceed the policy max.")
         if self.policy.require_stop_loss and kind in {"buy", "sell"} and not action.stop_loss_price:
             raise ValueError("Stop loss is required by policy.")
+        if kind in {"buy", "sell"}:
+            projected_gross = self.policy.projected_gross_position_units(snapshot, action)
+            if projected_gross > self.policy.max_gross_position_units:
+                raise ValueError("Gross position exposure limit reached.")
 
     def execute(
         self, action: TradeAction, snapshot: AccountSnapshot, *, dry_run: bool = True
@@ -133,6 +181,12 @@ class PracticeExecutionEngine:
         if action.take_profit_price:
             order["takeProfitOnFill"] = {"price": str(action.take_profit_price)}
         return order
+
+    def project_snapshot(self, snapshot: AccountSnapshot, action: TradeAction) -> AccountSnapshot:
+        return self.policy.project_snapshot(snapshot, action)
+
+    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+        return self.policy.projected_gross_position_units(snapshot, action)
 
 
 def snapshot_from_account_payload(

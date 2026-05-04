@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 import sys
 
@@ -143,6 +144,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
     parser.add_argument("--manage-exits", action="store_true", help="Evaluate and manage open positions before new entries.")
+    parser.add_argument("--audit-path", default="data/forex_autonomous_audit.jsonl")
+    parser.add_argument("--state-path", default="data/forex_autonomous_state.json")
     return parser.parse_args()
 
 
@@ -310,6 +313,22 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    write_audit_record(
+        Path(args.audit_path),
+        cycle=cycle,
+        app_config=app_config,
+        payload=payload,
+        snapshot=snapshot,
+        candidates=candidates,
+    )
+    write_state_record(
+        Path(args.state_path),
+        cycle=cycle,
+        app_config=app_config,
+        payload=payload,
+        snapshot=snapshot,
+        candidates=candidates,
+    )
 
     print(
         f"cycle {cycle}: scanned {len(instruments)} instruments, found {len(candidates)} opportunities"
@@ -561,7 +580,18 @@ def maybe_submit_candidates(
                 continue
             if candidate.get("has_position"):
                 continue
-        result = engine.execute(action, projected_snapshot, dry_run=app_config.environment != "practice")
+        try:
+            result = engine.execute(action, projected_snapshot, dry_run=app_config.environment != "practice")
+        except Exception as exc:  # pragma: no cover - live failure path
+            submissions.append({
+                "instrument": candidate["instrument"],
+                "action": action.action,
+                "score": candidate["score"],
+                "reason": candidate["reason"],
+                "dry_run": app_config.environment != "practice",
+                "error": str(exc),
+            })
+            continue
         submissions.append({
             "instrument": candidate["instrument"],
             "action": action.action,
@@ -599,6 +629,101 @@ def build_trade_action(candidate: dict[str, object]):
         take_profit_price=str(candidate.get("take_profit_price")) if candidate.get("take_profit_price") else None,
         metadata=dict(candidate.get("metadata") or {}),
     )
+
+
+def write_audit_record(
+    path: Path,
+    *,
+    cycle: int,
+    app_config,
+    payload: dict[str, object],
+    snapshot,
+    candidates: list[dict[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    top = candidates[0] if candidates else {}
+    submission = payload.get("submission") or {}
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cycle": cycle,
+        "account_id": app_config.account_id,
+        "group": app_config.group_name,
+        "instrument": top.get("instrument") or submission.get("instrument") or "multi",
+        "granularity": payload.get("granularity"),
+        "environment": app_config.environment,
+        "dry_run": app_config.environment != "practice",
+        "blocked": [],
+        "health": {"ok": True, "reasons": [], "details": {}},
+        "action": submission or top,
+        "result": submission.get("result") if isinstance(submission, dict) else None,
+        "snapshot": {
+            "nav": snapshot.nav,
+            "balance": snapshot.balance,
+            "open_trade_count": snapshot.open_trade_count,
+            "positions_by_instrument": snapshot.positions_by_instrument,
+        },
+        "candidates": candidates[:10],
+        "submission": submission or None,
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def write_state_record(
+    path: Path,
+    *,
+    cycle: int,
+    app_config,
+    payload: dict[str, object],
+    snapshot,
+    candidates: list[dict[str, object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    active_positions = {name: units for name, units in snapshot.positions_by_instrument.items() if units}
+    current_position = None
+    if len(active_positions) == 1:
+        instrument, units = next(iter(active_positions.items()))
+        current_position = {
+            "instrument": instrument,
+            "side": "long" if units > 0 else "short",
+            "units": abs(units),
+            "entry_price": None,
+            "peak_price": None,
+            "trough_price": None,
+        }
+    elif active_positions:
+        current_position = {
+            "instrument": "multiple",
+            "side": "mixed",
+            "units": sum(abs(units) for units in active_positions.values()),
+            "entry_price": None,
+            "peak_price": None,
+            "trough_price": None,
+        }
+    record = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "cycle": cycle,
+        "group": app_config.group_name,
+        "environment": app_config.environment,
+        "last_action": (payload.get("submission") or {}).get("action")
+        if isinstance(payload.get("submission"), dict)
+        else "watching",
+        "consecutive_failures": 0,
+        "current_position": current_position,
+        "realized_pnl_day": 0.0,
+        "realized_pnl_week": 0.0,
+        "open_trade_count": snapshot.open_trade_count,
+        "positions_by_instrument": snapshot.positions_by_instrument,
+        "latest_candidates": candidates[:10],
+        "snapshot": {
+            "nav": snapshot.nav,
+            "balance": snapshot.balance,
+            "open_trade_count": snapshot.open_trade_count,
+            "positions_by_instrument": snapshot.positions_by_instrument,
+        },
+        "submission": payload.get("submission"),
+    }
+    path.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

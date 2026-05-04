@@ -1,0 +1,511 @@
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import time
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from oanda_autotrader.app import build_account_client, build_instruments_client
+from oanda_autotrader.config import (
+    load_account_groups_or_default,
+    resolve_account_credentials,
+    select_account,
+)
+from oanda_autotrader.execution import (
+    PracticeExecutionEngine,
+    RiskPolicy,
+    TradeAction,
+    snapshot_from_account_payload,
+)
+from oanda_autotrader.indicators import atr
+from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover
+
+
+FX_PAIR_RE = re.compile(r"^[A-Z]{3}_[A-Z]{3}$")
+FX_CODES = {
+    "AUD",
+    "CAD",
+    "CHF",
+    "CNH",
+    "CZK",
+    "DKK",
+    "EUR",
+    "GBP",
+    "HKD",
+    "HUF",
+    "ILS",
+    "JPY",
+    "MXN",
+    "NOK",
+    "NZD",
+    "PLN",
+    "SEK",
+    "SGD",
+    "THB",
+    "TRY",
+    "USD",
+    "ZAR",
+    "BRL",
+    "CLP",
+    "COP",
+    "INR",
+    "KRW",
+    "MYR",
+    "PHP",
+    "RON",
+    "SAR",
+    "TWD",
+    "AED",
+    "QAR",
+    "KWD",
+    "BHD",
+    "RUB",
+    "CNY",
+    "NZD",
+    "TRY",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Scan tradeable FX pairs and rank opportunities.")
+    parser.add_argument("--accounts-path", default="accounts.yaml")
+    parser.add_argument("--group", default="demo")
+    parser.add_argument("--account", default="Primary")
+    parser.add_argument("--granularity", default="M5")
+    parser.add_argument("--count", type=int, default=120)
+    parser.add_argument("--fast-window", type=int, default=5)
+    parser.add_argument("--slow-window", type=int, default=20)
+    parser.add_argument("--units", type=int, default=100)
+    parser.add_argument("--risk-per-trade-fraction", type=float, default=0.0025)
+    parser.add_argument("--long-score-threshold", type=float, default=3.0)
+    parser.add_argument("--short-score-threshold", type=float, default=1.75)
+    parser.add_argument("--regime-score-threshold", type=float, default=1.25)
+    parser.add_argument("--trailing-atr-multiple", type=float, default=0.75)
+    parser.add_argument("--break-even-atr-multiple", type=float, default=0.5)
+    parser.add_argument("--max-hold-candles", type=int, default=18)
+    parser.add_argument("--max-open-trades", type=int, default=1)
+    parser.add_argument("--max-units", type=int, default=100)
+    parser.add_argument("--min-score", type=float, default=0.0)
+    parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--output", default="data/forex_opportunity_scan.json")
+    parser.add_argument("--include-held", action="store_true")
+    parser.add_argument("--majors-only", action="store_true", default=True, help="Limit scanning to the most liquid major FX pairs.")
+    parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
+    parser.add_argument("--min-submit-score", type=float, default=5.0)
+    parser.add_argument("--max-new-trades", type=int, default=1)
+    parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
+    parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
+    parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
+    parser.add_argument("--manage-exits", action="store_true", help="Evaluate and manage open positions before new entries.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.autonomous and args.iterations < 0:
+        raise SystemExit("--iterations must be 0 or greater.")
+    cycle = 0
+    while True:
+        cycle += 1
+        run_scan_cycle(args, cycle=cycle)
+        if not args.autonomous:
+            break
+        if args.iterations and cycle >= args.iterations:
+            break
+        time.sleep(max(1, args.interval_seconds))
+
+
+def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
+    groups = load_account_groups_or_default(args.accounts_path)
+    group, entry = select_account(groups, args.group, args.account)
+    app_config = resolve_account_credentials(group, entry)
+    account_client = build_account_client(app_config)
+    instruments_client = build_instruments_client(app_config)
+
+    details = account_client.get_account(app_config.account_id)
+    summary = account_client.get_account_summary(app_config.account_id)
+    snapshot = snapshot_from_account_payload(app_config, details, summary)
+    tradeable = account_client.get_instruments(app_config.account_id).get("instruments", [])
+    instruments = [
+        str(item.get("name"))
+        for item in tradeable
+        if isinstance(item, dict)
+        and is_fx_pair(str(item.get("name") or ""))
+        and (not args.majors_only or is_major_fx_pair(str(item.get("name") or "")))
+    ]
+
+    candidates = []
+    held = {name for name, units in snapshot.positions_by_instrument.items() if units}
+    managed_actions = []
+    strategy = StrategyConfig(
+        instrument=args.account,  # placeholder; overridden per instrument below
+        fast_window=args.fast_window,
+        slow_window=args.slow_window,
+        units=args.max_units,
+        risk_per_trade_fraction=args.risk_per_trade_fraction,
+        long_score_threshold=args.long_score_threshold,
+        short_score_threshold=args.short_score_threshold,
+        regime_score_threshold=args.regime_score_threshold,
+        trailing_atr_multiple=args.trailing_atr_multiple,
+        break_even_atr_multiple=args.break_even_atr_multiple,
+        max_hold_candles=args.max_hold_candles,
+    )
+
+    for instrument in instruments:
+        if not args.include_held and instrument in held:
+            continue
+        candles_payload = instruments_client.get_candles(
+            instrument,
+            price="M",
+            granularity=args.granularity,
+            count=args.count,
+        )
+        candles = candles_payload.get("candles", [])
+        if not candles:
+            continue
+        inst_strategy = StrategyConfig(
+            instrument=instrument,
+            fast_window=strategy.fast_window,
+            slow_window=strategy.slow_window,
+            units=strategy.units,
+            min_separation=strategy.min_separation,
+            atr_period=strategy.atr_period,
+            atr_stop_multiple=strategy.atr_stop_multiple,
+            atr_target_multiple=strategy.atr_target_multiple,
+            risk_per_trade_fraction=strategy.risk_per_trade_fraction,
+            long_score_threshold=strategy.long_score_threshold,
+            short_score_threshold=strategy.short_score_threshold,
+            regime_score_threshold=strategy.regime_score_threshold,
+            trailing_atr_multiple=strategy.trailing_atr_multiple,
+            max_hold_candles=strategy.max_hold_candles,
+            break_even_atr_multiple=strategy.break_even_atr_multiple,
+        )
+        action = moving_average_crossover(candles, inst_strategy, snapshot)
+        latest_atr = None
+        try:
+            latest_atr = atr(candles, inst_strategy.atr_period)
+        except ValueError:
+            pass
+        score = opportunity_score(action.action, action.metadata or {}, latest_atr)
+        if score < args.min_score:
+            continue
+        candidates.append(
+            {
+                "instrument": instrument,
+                "action": action.action,
+                "reason": action.reason,
+                "score": score,
+                "confidence": action.confidence,
+                "units": action.units,
+                "stop_loss_price": action.stop_loss_price,
+                "take_profit_price": action.take_profit_price,
+                "metadata": action.metadata,
+                "atr": latest_atr,
+                "has_position": instrument in held,
+            }
+        )
+
+    if args.manage_exits and held:
+        managed_actions.extend(
+            build_managed_exit_candidates(
+                app_config=app_config,
+                snapshot=snapshot,
+                instruments=instruments,
+                args=args,
+                strategy=strategy,
+                instruments_client=instruments_client,
+            )
+        )
+
+    candidates.extend(managed_actions)
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    payload = {
+        "account_id": app_config.account_id,
+        "group": app_config.group_name,
+        "environment": app_config.environment,
+        "granularity": args.granularity,
+        "scan_count": len(candidates),
+        "held_positions": sorted(held),
+        "top_opportunities": candidates[: args.top],
+        "submission": None,
+    }
+
+    if args.submit:
+        submission = maybe_submit_best_candidate(
+            app_config=app_config,
+            snapshot=snapshot,
+            candidates=candidates,
+            args=args,
+        )
+        payload["submission"] = submission
+
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    print(
+        f"cycle {cycle}: scanned {len(instruments)} instruments, found {len(candidates)} opportunities"
+    )
+    for row in candidates[: args.top]:
+        print(
+            f"{row['instrument']} | action={row['action']} score={row['score']:.3f} "
+            f"reason={row['reason']} confidence={row['confidence']:.2f}"
+        )
+    if payload["submission"] is not None:
+        submission = payload["submission"]
+        print(
+            f"submitted {submission['instrument']} {submission['action']} "
+            f"score={submission['score']:.3f} dry_run={submission['dry_run']}"
+        )
+    print(f"wrote {output}")
+
+
+def opportunity_score(action: str, metadata: dict[str, object], latest_atr: float | None) -> float:
+    action = action.lower()
+    long_score = float(metadata.get("long_score", 0.0) or 0.0)
+    short_score = float(metadata.get("short_score", 0.0) or 0.0)
+    regime_score = float(metadata.get("regime_score", 0.0) or 0.0)
+    separation = float(metadata.get("separation", 0.0) or 0.0)
+    rsi = float(metadata.get("rsi", 50.0) or 50.0)
+    atr_bonus = 0.0 if latest_atr is None else min(0.5, latest_atr * 1000.0)
+
+    if action == "buy":
+        base = long_score
+        momentum = max(0.0, (rsi - 50.0) / 20.0)
+    elif action == "sell":
+        base = short_score
+        momentum = max(0.0, (50.0 - rsi) / 20.0)
+    else:
+        base = max(long_score, short_score) * 0.25
+        momentum = 0.0
+
+    return base + regime_score * 0.5 + momentum + min(0.5, separation * 1000.0) + atr_bonus
+
+
+def is_fx_pair(name: str) -> bool:
+    match = FX_PAIR_RE.match(name or "")
+    if not match:
+        return False
+    base, quote = name.split("_", 1)
+    return base in FX_CODES and quote in FX_CODES
+
+
+def is_major_fx_pair(name: str) -> bool:
+    majors = {"AUD", "CAD", "CHF", "EUR", "GBP", "JPY", "NZD", "USD"}
+    if not is_fx_pair(name):
+        return False
+    base, quote = name.split("_", 1)
+    return base in majors and quote in majors
+
+
+def build_managed_exit_candidates(
+    *,
+    app_config,
+    snapshot,
+    instruments: list[str],
+    args: argparse.Namespace,
+    strategy: StrategyConfig,
+    instruments_client,
+) -> list[dict[str, object]]:
+    managed: list[dict[str, object]] = []
+    for instrument, units in snapshot.positions_by_instrument.items():
+        if not units:
+            continue
+        if instrument not in instruments:
+            continue
+        candles_payload = instruments_client.get_candles(
+            instrument,
+            price="M",
+            granularity=args.granularity,
+            count=args.count,
+        )
+        candles = candles_payload.get("candles", [])
+        if not candles:
+            continue
+        inst_strategy = StrategyConfig(
+            instrument=instrument,
+            fast_window=strategy.fast_window,
+            slow_window=strategy.slow_window,
+            units=strategy.units,
+            min_separation=strategy.min_separation,
+            atr_period=strategy.atr_period,
+            atr_stop_multiple=strategy.atr_stop_multiple,
+            atr_target_multiple=strategy.atr_target_multiple,
+            risk_per_trade_fraction=strategy.risk_per_trade_fraction,
+            long_score_threshold=strategy.long_score_threshold,
+            short_score_threshold=strategy.short_score_threshold,
+            regime_score_threshold=strategy.regime_score_threshold,
+            trailing_atr_multiple=strategy.trailing_atr_multiple,
+            max_hold_candles=strategy.max_hold_candles,
+            break_even_atr_multiple=strategy.break_even_atr_multiple,
+        )
+        candidate = evaluate_managed_exit(instrument, units, candles, snapshot, inst_strategy)
+        if candidate is not None:
+            managed.append(candidate)
+    return managed
+
+
+def evaluate_managed_exit(
+    instrument: str,
+    units: int,
+    candles: list[dict],
+    snapshot,
+    strategy: StrategyConfig,
+) -> dict[str, object] | None:
+    action = moving_average_crossover(candles, strategy, snapshot)
+    latest_atr = None
+    try:
+        latest_atr = atr(candles, strategy.atr_period)
+    except ValueError:
+        pass
+    if latest_atr is None:
+        return None
+    metadata = action.metadata or {}
+    current_units = int(metadata.get("current_units", units) or units)
+    if current_units == 0:
+        return None
+    action_name = str(action.action).lower()
+    if current_units > 0 and action_name == "sell":
+        return {
+            "instrument": instrument,
+            "action": "close",
+            "reason": "managed_close_long",
+            "score": opportunity_score("sell", metadata, latest_atr) + 1.0,
+            "confidence": 0.75,
+            "units": abs(current_units),
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "metadata": metadata,
+            "atr": latest_atr,
+            "has_position": True,
+            "managed": True,
+        }
+    if current_units < 0 and action_name == "buy":
+        return {
+            "instrument": instrument,
+            "action": "close",
+            "reason": "managed_close_short",
+            "score": opportunity_score("buy", metadata, latest_atr) + 1.0,
+            "confidence": 0.75,
+            "units": abs(current_units),
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "metadata": metadata,
+            "atr": latest_atr,
+            "has_position": True,
+            "managed": True,
+        }
+    if current_units > 0 and metadata.get("long_score", 0.0) < 0.5:
+        return {
+            "instrument": instrument,
+            "action": "close",
+            "reason": "managed_long_decay",
+            "score": 1.0,
+            "confidence": 0.7,
+            "units": abs(current_units),
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "metadata": metadata,
+            "atr": latest_atr,
+            "has_position": True,
+            "managed": True,
+        }
+    if current_units < 0 and metadata.get("short_score", 0.0) < 0.5:
+        return {
+            "instrument": instrument,
+            "action": "close",
+            "reason": "managed_short_decay",
+            "score": 1.0,
+            "confidence": 0.7,
+            "units": abs(current_units),
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "metadata": metadata,
+            "atr": latest_atr,
+            "has_position": True,
+            "managed": True,
+        }
+    return None
+
+
+def maybe_submit_best_candidate(
+    *,
+    app_config,
+    snapshot,
+    candidates: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> dict[str, object] | None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(
+            practice_only=True,
+            allowed_instruments=tuple(item["instrument"] for item in candidates) or (),
+            max_units_per_trade=args.max_units,
+            max_open_trades=args.max_open_trades,
+        ),
+    )
+    ordered_candidates = sorted(
+        candidates,
+        key=lambda item: (str(item.get("action")) == "close", float(item.get("score", 0.0) or 0.0)),
+        reverse=True,
+    )
+    for candidate in ordered_candidates:
+        if float(candidate.get("score", 0.0) or 0.0) < args.min_submit_score:
+            continue
+        action = build_trade_action(candidate)
+        if action.action == "hold":
+            continue
+        if action.action != "close":
+            if int(snapshot.open_trade_count) >= args.max_new_trades:
+                continue
+            if candidate.get("has_position"):
+                continue
+        result = engine.execute(action, snapshot, dry_run=app_config.environment != "practice")
+        return {
+            "instrument": candidate["instrument"],
+            "action": action.action,
+            "score": candidate["score"],
+            "reason": candidate["reason"],
+            "dry_run": app_config.environment != "practice",
+            "result": result,
+        }
+    return None
+
+
+def build_trade_action(candidate: dict[str, object]):
+    action = str(candidate["action"])
+    if action == "close":
+        return TradeAction(
+            action="close",
+            instrument=str(candidate["instrument"]),
+            units=int(candidate.get("units") or 0),
+            confidence=float(candidate.get("confidence", 0.0) or 0.0),
+            reason=str(candidate.get("reason") or "managed_exit"),
+            metadata=dict(candidate.get("metadata") or {}),
+        )
+    if action not in {"buy", "sell"}:
+        return TradeAction(action="hold", instrument=str(candidate["instrument"]))
+    return TradeAction(
+        action=action,
+        instrument=str(candidate["instrument"]),
+        units=int(candidate.get("units") or 0),
+        confidence=float(candidate.get("confidence", 0.0) or 0.0),
+        reason=str(candidate.get("reason") or "scanner_pick"),
+        stop_loss_price=str(candidate.get("stop_loss_price")) if candidate.get("stop_loss_price") else None,
+        take_profit_price=str(candidate.get("take_profit_price")) if candidate.get("take_profit_price") else None,
+        metadata=dict(candidate.get("metadata") or {}),
+    )
+
+
+if __name__ == "__main__":
+    main()

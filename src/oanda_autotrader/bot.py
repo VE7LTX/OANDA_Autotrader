@@ -135,7 +135,7 @@ class SimpleTradingBot:
 
             result = self.execution_engine.execute(action, snapshot, dry_run=dry_run)
             record["result"] = result
-            if latest_close is not None:
+            if latest_close is not None and not dry_run:
                 realized = self._update_local_position(
                     action.action.lower(),
                     latest_close,

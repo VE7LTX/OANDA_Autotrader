@@ -584,6 +584,8 @@ def maybe_submit_candidates(
                 continue
             if candidate.get("has_position"):
                 continue
+            if not can_submit_entry(engine, projected_snapshot, action):
+                continue
         try:
             result = engine.execute(action, projected_snapshot, dry_run=app_config.environment != "practice")
         except Exception as exc:  # pragma: no cover - live failure path
@@ -608,6 +610,23 @@ def maybe_submit_candidates(
         if action.action != "close":
             new_entries_submitted += 1
     return submissions
+
+
+def can_submit_entry(engine: PracticeExecutionEngine, snapshot, action: TradeAction) -> bool:
+    if action.action.lower() not in {"buy", "sell"}:
+        return True
+    projected = engine.project_snapshot(snapshot, action)
+    if projected.open_trade_count > engine.policy.max_open_trades:
+        return False
+    if engine.projected_gross_position_units(snapshot, action) > engine.policy.max_gross_position_units:
+        return False
+    if engine.projected_currency_gross_units(snapshot, action) > engine.policy.max_currency_gross_units:
+        return False
+    if engine.policy.max_currency_positions > 0:
+        currency_counts = engine.policy._currency_position_counts(projected.positions_by_instrument)
+        if max(currency_counts.values(), default=0) > engine.policy.max_currency_positions:
+            return False
+    return True
 
 
 def build_trade_action(candidate: dict[str, object]):

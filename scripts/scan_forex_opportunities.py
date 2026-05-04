@@ -328,6 +328,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         )
         payload["submissions"] = submissions
         payload["submission"] = submissions[0] if submissions else None
+        payload["decision_summary"] = build_decision_summary(candidates, submissions, args)
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -621,7 +622,9 @@ def maybe_submit_candidates(
     recent_entries = list(state.get("recent_entries") or [])
     realized_pnl_day = float(state.get("realized_pnl_day", 0.0) or 0.0)
     for candidate in ordered_candidates:
-        if float(candidate.get("score", 0.0) or 0.0) < args.min_submit_score:
+        candidate_action = str(candidate.get("action") or "").lower()
+        candidate_score = float(candidate.get("score", 0.0) or 0.0)
+        if candidate_action != "close" and candidate_score < args.min_submit_score:
             continue
         action = build_trade_action(candidate)
         if action.action == "hold":
@@ -698,6 +701,52 @@ def can_submit_entry(engine: PracticeExecutionEngine, snapshot, action: TradeAct
         if max(currency_counts.values(), default=0) > engine.policy.max_currency_positions:
             return False
     return True
+
+
+def build_decision_summary(
+    candidates: list[dict[str, object]],
+    submissions: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    submitted = [item for item in submissions if (item.get("result") or {}).get("submitted")]
+    if submitted:
+        return {
+            "decision": "submitted",
+            "reason": "execution_submitted",
+            "submitted_count": len(submitted),
+            "instruments": [item.get("instrument") for item in submitted],
+            "min_submit_score": args.min_submit_score,
+        }
+
+    actionable = [
+        item
+        for item in candidates
+        if str(item.get("action") or "").lower() in {"buy", "sell", "close"}
+    ]
+    if not actionable:
+        return {
+            "decision": "watching",
+            "reason": "no_actionable_candidates",
+            "submitted_count": 0,
+            "min_submit_score": args.min_submit_score,
+        }
+
+    top = max(actionable, key=lambda item: float(item.get("score", 0.0) or 0.0))
+    top_score = float(top.get("score", 0.0) or 0.0)
+    if top_score < args.min_submit_score:
+        reason = "below_submit_threshold"
+    else:
+        reason = str(top.get("blocked_reason") or "not_selected")
+    return {
+        "decision": "watching",
+        "reason": reason,
+        "submitted_count": 0,
+        "instrument": top.get("instrument"),
+        "action": top.get("action"),
+        "score": top_score,
+        "score_gap": max(0.0, float(args.min_submit_score) - top_score),
+        "min_submit_score": args.min_submit_score,
+    }
 
 
 def entry_throttle_reason(
@@ -879,6 +928,7 @@ def write_audit_record(
         },
         "candidates": candidates[:10],
         "submission": submission or None,
+        "decision_summary": payload.get("decision_summary"),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")
@@ -964,6 +1014,7 @@ def write_state_record(
             "positions_by_instrument": snapshot.positions_by_instrument,
         },
         "submission": payload.get("submission"),
+        "decision_summary": payload.get("decision_summary"),
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
 

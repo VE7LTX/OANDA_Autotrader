@@ -9,12 +9,14 @@ import scripts.scan_forex_opportunities as scanner
 from oanda_autotrader.execution import TradeAction
 
 from scripts.scan_forex_opportunities import (
+    build_decision_summary,
     build_trade_action,
     describe_exception,
     entry_throttle_reason,
     fetch_candles_safe,
     is_fx_pair,
     is_major_fx_pair,
+    maybe_submit_candidates,
     opportunity_score,
 )
 
@@ -169,3 +171,97 @@ def test_entry_throttle_limits_currency_family() -> None:
     action = TradeAction(action="sell", instrument="USD_JPY", units=100)
 
     assert entry_throttle_reason(action, recent, args, realized_pnl_day=0.0) == "currency_cooldown"
+
+
+def test_decision_summary_reports_below_threshold() -> None:
+    args = SimpleNamespace(min_submit_score=5.4)
+    candidates = [{"instrument": "NZD_JPY", "action": "sell", "score": 5.2}]
+
+    summary = build_decision_summary(candidates, [], args)
+
+    assert summary["decision"] == "watching"
+    assert summary["reason"] == "below_submit_threshold"
+    assert summary["score_gap"] == 0.20000000000000018
+
+
+def test_decision_summary_reports_blocked_candidate() -> None:
+    args = SimpleNamespace(min_submit_score=5.4)
+    candidates = [
+        {
+            "instrument": "USD_JPY",
+            "action": "sell",
+            "score": 5.8,
+            "blocked_reason": "currency_cooldown",
+        }
+    ]
+
+    summary = build_decision_summary(candidates, [], args)
+
+    assert summary["decision"] == "watching"
+    assert summary["reason"] == "currency_cooldown"
+
+
+def test_decision_summary_reports_submissions() -> None:
+    args = SimpleNamespace(min_submit_score=5.4)
+    submissions = [
+        {"instrument": "GBP_USD", "result": {"submitted": True}},
+        {"instrument": "NZD_JPY", "result": {"submitted": True}},
+    ]
+
+    summary = build_decision_summary([], submissions, args)
+
+    assert summary["decision"] == "submitted"
+    assert summary["submitted_count"] == 2
+    assert summary["instruments"] == ["GBP_USD", "NZD_JPY"]
+
+
+def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
+    class FakeEngine:
+        policy = SimpleNamespace(
+            max_open_trades=5,
+            max_gross_position_units=500,
+            max_currency_gross_units=500,
+            max_currency_positions=2,
+        )
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def execute(self, action, snapshot, *, dry_run):
+            return {"submitted": True, "dry_run": dry_run, "order": {"units": str(action.units)}}
+
+        def project_snapshot(self, snapshot, action):
+            return snapshot
+
+    monkeypatch.setattr("scripts.scan_forex_opportunities.PracticeExecutionEngine", FakeEngine)
+    args = SimpleNamespace(
+        min_submit_score=5.4,
+        max_units=100,
+        max_open_trades=5,
+        max_gross_position_units=500,
+        max_currency_gross_units=500,
+        max_currency_positions=2,
+        max_new_trades=5,
+        state_path="missing-state.json",
+    )
+    app_config = SimpleNamespace(environment="practice")
+    snapshot = SimpleNamespace(open_trade_count=1, positions_by_instrument={"GBP_USD": -100})
+    candidates = [
+        {
+            "instrument": "GBP_USD",
+            "action": "close",
+            "score": 1.0,
+            "reason": "managed_exit",
+            "units": 100,
+        }
+    ]
+
+    submissions = maybe_submit_candidates(
+        app_config=app_config,
+        snapshot=snapshot,
+        candidates=candidates,
+        args=args,
+    )
+
+    assert submissions[0]["action"] == "close"
+    assert submissions[0]["result"]["submitted"] is True

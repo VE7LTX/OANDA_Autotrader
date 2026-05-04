@@ -12,13 +12,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 DEFAULT_AUDIT_PATH = DATA_DIR / "bot_audit.jsonl"
 DEFAULT_STATE_PATH = DATA_DIR / "bot_state.json"
+DEFAULT_FOREX_AUDIT_PATH = DATA_DIR / "forex_autonomous_audit.jsonl"
+DEFAULT_FOREX_STATE_PATH = DATA_DIR / "forex_autonomous_state.json"
 DEFAULT_SCAN_PATH = DATA_DIR / "forex_opportunity_scan.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Monitor the latest bot cycle, state, and watchlist.")
-    parser.add_argument("--audit-path", default=str(DEFAULT_AUDIT_PATH))
-    parser.add_argument("--state-path", default=str(DEFAULT_STATE_PATH))
+    parser.add_argument("--audit-path", default=str(DEFAULT_FOREX_AUDIT_PATH if DEFAULT_FOREX_AUDIT_PATH.exists() else DEFAULT_AUDIT_PATH))
+    parser.add_argument("--state-path", default=str(DEFAULT_FOREX_STATE_PATH if DEFAULT_FOREX_STATE_PATH.exists() else DEFAULT_STATE_PATH))
     parser.add_argument("--scan-path", default=str(DEFAULT_SCAN_PATH))
     return parser.parse_args()
 
@@ -69,6 +71,7 @@ class MonitorApp(tk.Tk):
         self.action_var = tk.StringVar(value="No action yet")
         self.position_var = tk.StringVar(value="No snapshot yet")
         self.state_var = tk.StringVar(value="No runtime state yet")
+        self.decision_var = tk.StringVar(value="No decision summary yet")
         self.refresh_var = tk.StringVar(value="Auto-refresh every 2 seconds")
 
         self._build_ui()
@@ -150,7 +153,7 @@ class MonitorApp(tk.Tk):
         self._card_grid(cards_frame, 0, 2, "Latest Action", self.action_var)
         self._card_grid(cards_frame, 1, 0, "Position State", self.position_var)
         self._card_grid(cards_frame, 1, 1, "Runtime State", self.state_var)
-        self._card_grid(cards_frame, 1, 2, "Portfolio", self.state_var)
+        self._card_grid(cards_frame, 1, 2, "Decision Gate", self.decision_var)
 
         watchlists_grid = tk.Frame(scroll_frame, bg="#0f172a")
         watchlists_grid.pack(fill="x", pady=6)
@@ -250,6 +253,7 @@ class MonitorApp(tk.Tk):
         self.action_var.set(format_action_summary(audit.get("action") or {}, audit.get("result") or {}))
         self.position_var.set(format_snapshot_summary(audit.get("snapshot") or {}))
         self.state_var.set(format_state_summary(state or {}))
+        self.decision_var.set(format_decision_summary(audit.get("decision_summary") or (state or {}).get("decision_summary") or {}))
         self._update_pills(audit, blocked, state or {})
         self._render_watchlist(scan or {})
         self._render_side_watchlists(scan or {})
@@ -421,6 +425,19 @@ def format_state_summary(state: dict) -> str:
             f"Entry: {position.get('entry_price', 'n/a')}  Peak: {position.get('peak_price', 'n/a')}  Trough: {position.get('trough_price', 'n/a')}",
             f"Active positions: {active_text}",
             f"Realized PnL: {state.get('realized_pnl_day', 'n/a')}  Unrealized PnL: {state.get('unrealized_pnl', 'n/a')}",
+        ]
+    )
+
+
+def format_decision_summary(decision: dict) -> str:
+    if not decision:
+        return "No decision summary yet"
+    return "\n".join(
+        [
+            f"Decision: {decision.get('decision', 'n/a')}  Reason: {decision.get('reason', 'n/a')}",
+            f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}",
+            f"Score: {decision.get('score', 'n/a')}  Need: {decision.get('min_submit_score', 'n/a')}  Gap: {decision.get('score_gap', 'n/a')}",
+            f"Submitted: {decision.get('submitted_count', 0)}  Instruments: {', '.join(decision.get('instruments') or []) or 'none'}",
         ]
     )
 

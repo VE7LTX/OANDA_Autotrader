@@ -43,6 +43,7 @@ def test_classify_status_distinguishes_cooldown_and_risk() -> None:
     assert classify_status({"blocked": ["regime_filter_blocked"]}, ["regime_filter_blocked"]) == "RISK BLOCKED"
     assert classify_status({"error": "boom"}, []) == "ERROR"
     assert classify_status({}, []) == "READY"
+    assert classify_status({}, [], {"decision": "watching"}) == "WATCHING"
 
 
 def test_format_snapshot_summary_includes_pnl() -> None:
@@ -56,8 +57,8 @@ def test_format_snapshot_summary_includes_pnl() -> None:
             "realized_pnl_day": 12.5,
         }
     )
-    assert "Unrealized: 50.0" in summary
-    assert "Realized: 12.5" in summary
+    assert "Unrealized: 50.000" in summary
+    assert "Realized: 12.500" in summary
 
 
 def test_format_decision_summary_is_human_readable() -> None:
@@ -82,4 +83,4 @@ def test_format_decision_summary_is_human_readable() -> None:
     assert "Reason: below_submit_threshold" in summary
     assert "NZD_JPY" in summary
     assert "Filter: regime_filter_hold" in summary
-    assert "Short: 2.85" in summary
+    assert "Short: 2.850" in summary

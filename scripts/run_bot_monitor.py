@@ -63,7 +63,7 @@ class MonitorApp(tk.Tk):
         self.style.configure("Card.TFrame", background="#111827")
         self.style.configure("Header.TLabel", background="#0f172a", foreground="#e5e7eb", font=("Segoe UI", 18, "bold"))
         self.style.configure("Sub.TLabel", background="#111827", foreground="#cbd5e1", font=("Segoe UI", 10))
-        self.style.configure("Value.TLabel", background="#111827", foreground="#f8fafc", font=("Consolas", 10))
+        self.style.configure("Value.TLabel", background="#111827", foreground="#f8fafc", font=("Consolas", 9))
 
         self.status_var = tk.StringVar(value="Waiting for bot audit data")
         self.summary_var = tk.StringVar(value="No audit record yet")
@@ -243,7 +243,8 @@ class MonitorApp(tk.Tk):
             return
 
         blocked = audit.get("blocked") or []
-        status = classify_status(audit, blocked)
+        decision = audit.get("decision_summary") or (state or {}).get("decision_summary") or {}
+        status = classify_status(audit, blocked, decision)
         self.status_var.set(
             f"Latest cycle status: {status} | Audit: {self.audit_path.name} | State: {self.state_path.name}"
         )
@@ -253,8 +254,8 @@ class MonitorApp(tk.Tk):
         self.action_var.set(format_action_summary(audit.get("action") or {}, audit.get("result") or {}))
         self.position_var.set(format_snapshot_summary(audit.get("snapshot") or {}))
         self.state_var.set(format_state_summary(state or {}))
-        self.decision_var.set(format_decision_summary(audit.get("decision_summary") or (state or {}).get("decision_summary") or {}))
-        self._update_pills(audit, blocked, state or {})
+        self.decision_var.set(format_decision_summary(decision))
+        self._update_pills(audit, blocked, state or {}, decision)
         self._render_watchlist(scan or {})
         self._render_side_watchlists(scan or {})
         self.after(2000, self.refresh)
@@ -284,18 +285,19 @@ class MonitorApp(tk.Tk):
             kind = str(row.get("kind", "entry")).upper()
             color = "#166534" if kind == "EXIT" else "#1d4ed8"
             text = (
-                f"{kind}  {row.get('instrument')}  {str(row.get('action', 'n/a')).upper()}  "
-                f"score {float(row.get('score', 0.0)):.3f}  "
-                f"reason {row.get('reason', 'n/a')}"
+                f"{kind} {row.get('instrument')} {str(row.get('action', 'n/a')).upper()}  "
+                f"score {_fmt(row.get('score'))}\n"
+                f"{row.get('reason', 'n/a')}"
             )
             tk.Label(
                 self.watchlist_container,
                 text=text,
                 bg=color,
                 fg="#f8fafc",
-                font=("Consolas", 10),
+                font=("Consolas", 9),
                 anchor="w",
                 justify="left",
+                wraplength=310,
             ).pack(fill="x", pady=2)
 
     def _render_side_watchlists(self, scan: dict) -> None:
@@ -338,24 +340,27 @@ class MonitorApp(tk.Tk):
             return
         for row in rows[:5]:
             text = (
-                f"{row.get('instrument')}  {str(row.get('action', 'n/a')).upper()}  "
-                f"score {float(row.get('score', 0.0)):.3f}  reason {row.get('reason', 'n/a')}"
+                f"{row.get('instrument')} {str(row.get('action', 'n/a')).upper()}  "
+                f"score {_fmt(row.get('score'))}\n"
+                f"{row.get('reason', 'n/a')}"
             )
             tk.Label(
                 container,
                 text=text,
                 bg=color,
                 fg="#f8fafc",
-                font=("Consolas", 10),
+                font=("Consolas", 9),
                 anchor="w",
                 justify="left",
+                wraplength=310,
             ).pack(fill="x", pady=2)
 
 
 def format_cycle_summary(audit: dict, blocked: list[str]) -> str:
     return "\n".join(
         [
-            f"Instrument: {audit.get('instrument', 'n/a')}  Granularity: {audit.get('granularity', 'n/a')}",
+            f"Instrument: {audit.get('instrument', 'n/a')}",
+            f"Granularity: {audit.get('granularity', 'n/a')}",
             f"Env: {audit.get('environment', 'n/a')}  Dry-run: {audit.get('dry_run', 'n/a')}",
             f"Status: {'blocked' if blocked else 'ready'}  Blocked: {', '.join(blocked) if blocked else 'none'}",
             f"Error: {audit.get('error') or 'none'}",
@@ -369,9 +374,10 @@ def format_health_summary(health: dict) -> str:
     return "\n".join(
         [
             f"OK: {health.get('ok', 'n/a')}  Reasons: {', '.join(reasons) if reasons else 'none'}",
-            f"Stale secs: {details.get('stale_seconds', 'n/a')}  Session hour UTC: {details.get('session_hour_utc', 'n/a')}",
-            f"ATR: {details.get('atr', 'n/a')}  Regime: {details.get('regime_score', 'n/a')}",
-            f"Day PnL: {details.get('daily_pnl', 'n/a')}  Week PnL: {details.get('weekly_pnl', 'n/a')}",
+            f"Stale secs: {_fmt(details.get('stale_seconds'))}",
+            f"Session hour UTC: {details.get('session_hour_utc', 'n/a')}",
+            f"ATR: {_fmt(details.get('atr'))}  Regime: {_fmt(details.get('regime_score'))}",
+            f"Day PnL: {_fmt(details.get('daily_pnl'))}  Week PnL: {_fmt(details.get('weekly_pnl'))}",
         ]
     )
 
@@ -383,9 +389,11 @@ def format_action_summary(action: dict, result: dict) -> str:
     return "\n".join(
         [
             f"Action: {action.get('action', 'n/a')}  Reason: {action.get('reason', 'n/a')}",
-            f"Instrument: {action.get('instrument', 'n/a')}  Units: {action.get('units', 'n/a')}  Order units: {order_units or 'n/a'}",
-            f"Confidence: {action.get('confidence', 'n/a')}  Long score: {metadata.get('long_score', 'n/a')}  Short score: {metadata.get('short_score', 'n/a')}",
-            f"Fast MA: {metadata.get('fast_ma', 'n/a')}  Slow MA: {metadata.get('slow_ma', 'n/a')}  RSI: {metadata.get('rsi', 'n/a')}",
+            f"Instrument: {action.get('instrument', 'n/a')}  Units: {action.get('units', 'n/a')}",
+            f"Order units: {order_units or 'n/a'}  Confidence: {_fmt(action.get('confidence'))}",
+            f"Long: {_fmt(metadata.get('long_score'))}  Short: {_fmt(metadata.get('short_score'))}",
+            f"Fast MA: {_fmt(metadata.get('fast_ma'))}",
+            f"Slow MA: {_fmt(metadata.get('slow_ma'))}  RSI: {_fmt(metadata.get('rsi'))}",
         ]
     )
 
@@ -395,9 +403,12 @@ def format_snapshot_summary(snapshot: dict) -> str:
     active_positions = ", ".join(f"{name}:{units}" for name, units in positions.items() if units) or "flat"
     return "\n".join(
         [
-            f"NAV: {snapshot.get('nav', 'n/a')}  Balance: {snapshot.get('balance', 'n/a')}",
-            f"Open trades: {snapshot.get('open_trade_count', 'n/a')}  Positions: {active_positions}",
-            f"Unrealized: {snapshot.get('unrealized_pnl', 'n/a')}  Realized: {snapshot.get('realized_pnl_day', 'n/a')}",
+            f"NAV: {_fmt(snapshot.get('nav'))}",
+            f"Balance: {_fmt(snapshot.get('balance'))}",
+            f"Open trades: {_fmt(snapshot.get('open_trade_count'), digits=0)}",
+            f"Positions: {active_positions}",
+            f"Unrealized: {_fmt(snapshot.get('unrealized_pnl'))}",
+            f"Realized: {_fmt(snapshot.get('realized_pnl_day'))}",
         ]
     )
 
@@ -415,7 +426,8 @@ def format_state_summary(state: dict) -> str:
                 f"Failures: {state.get('consecutive_failures', 'n/a')}  Last action: {state.get('last_action', 'n/a')}",
                 "Current position: none",
                 f"Active positions: {active_text}",
-                f"Realized PnL: {state.get('realized_pnl_day', 'n/a')}  Unrealized PnL: {state.get('unrealized_pnl', 'n/a')}",
+                f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
+                f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
             ]
         )
     return "\n".join(
@@ -424,7 +436,8 @@ def format_state_summary(state: dict) -> str:
             f"Current position: {position.get('side', 'n/a')} {position.get('units', 'n/a')} {position.get('instrument', 'n/a')}",
             f"Entry: {position.get('entry_price', 'n/a')}  Peak: {position.get('peak_price', 'n/a')}  Trough: {position.get('trough_price', 'n/a')}",
             f"Active positions: {active_text}",
-            f"Realized PnL: {state.get('realized_pnl_day', 'n/a')}  Unrealized PnL: {state.get('unrealized_pnl', 'n/a')}",
+            f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
+            f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
         ]
     )
 
@@ -435,12 +448,27 @@ def format_decision_summary(decision: dict) -> str:
     return "\n".join(
         [
             f"Decision: {decision.get('decision', 'n/a')}  Reason: {decision.get('reason', 'n/a')}",
-            f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}  Filter: {decision.get('filter_reason', 'n/a')}",
-            f"Score: {decision.get('score', 'n/a')}  Need: {decision.get('min_submit_score', 'n/a')}  Gap: {decision.get('score_gap', 'n/a')}",
-            f"Long: {decision.get('long_score', 'n/a')}  Short: {decision.get('short_score', 'n/a')}  Regime: {decision.get('regime_score', 'n/a')}  RSI: {decision.get('rsi', 'n/a')}",
+            f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}",
+            f"Filter: {decision.get('filter_reason', 'n/a')}",
+            f"Score: {_fmt(decision.get('score'))}  Need: {_fmt(decision.get('min_submit_score'))}",
+            f"Gap: {_fmt(decision.get('score_gap'))}",
+            f"Long: {_fmt(decision.get('long_score'))}  Short: {_fmt(decision.get('short_score'))}",
+            f"Regime: {_fmt(decision.get('regime_score'))}  RSI: {_fmt(decision.get('rsi'))}",
             f"Submitted: {decision.get('submitted_count', 0)}  Instruments: {', '.join(decision.get('instruments') or []) or 'none'}",
         ]
     )
+
+
+def _fmt(value, *, digits: int = 3) -> str:
+    if value in (None, ""):
+        return "n/a"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if digits == 0:
+        return str(int(round(number)))
+    return f"{number:.{digits}f}"
 
 
 def _position_label(state: dict) -> str:
@@ -474,10 +502,12 @@ def _set_pill(pill: tk.Label, prefix: str, text: str, color: str) -> None:
     pill.configure(text=f"{prefix}: {text}", bg=color)
 
 
-def classify_status(audit: dict, blocked: list[str]) -> str:
+def classify_status(audit: dict, blocked: list[str], decision: dict | None = None) -> str:
     if audit.get("error"):
         return "ERROR"
     if not blocked:
+        if (decision or {}).get("decision") == "watching":
+            return "WATCHING"
         return "READY"
     if any(reason.startswith("cooldown") for reason in blocked):
         return "COOLDOWN"
@@ -489,6 +519,8 @@ def classify_status(audit: dict, blocked: list[str]) -> str:
 def _status_color(status: str) -> str:
     if status == "READY":
         return "#166534"
+    if status == "WATCHING":
+        return "#1d4ed8"
     if status == "COOLDOWN":
         return "#92400e"
     if status == "RISK BLOCKED":
@@ -498,8 +530,8 @@ def _status_color(status: str) -> str:
     return "#334155"
 
 
-def _update_pills(self: MonitorApp, audit: dict, blocked: list[str], state: dict) -> None:
-    status = classify_status(audit, blocked)
+def _update_pills(self: MonitorApp, audit: dict, blocked: list[str], state: dict, decision: dict | None = None) -> None:
+    status = classify_status(audit, blocked, decision)
     _set_pill(self.status_pill, "Status", status, _status_color(status))
     _set_pill(self.position_pill, "Position", _position_label(state), "#0f766e")
     _set_pill(self.signal_pill, "Signal", _signal_label(audit), "#7c3aed")

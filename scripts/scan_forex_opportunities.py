@@ -143,7 +143,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         and (not args.majors_only or is_major_fx_pair(str(item.get("name") or "")))
     ]
 
-    candidates = []
+    entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
     managed_actions = []
     strategy = StrategyConfig(
@@ -198,10 +198,11 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         score = opportunity_score(action.action, action.metadata or {}, latest_atr)
         if score < args.min_score:
             continue
-        candidates.append(
+        entry_candidates.append(
             {
                 "instrument": instrument,
                 "action": action.action,
+                "kind": "entry",
                 "reason": action.reason,
                 "score": score,
                 "confidence": action.confidence,
@@ -226,7 +227,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             )
         )
 
-    candidates.extend(managed_actions)
+    candidates = managed_actions + entry_candidates
 
     candidates.sort(key=lambda item: item["score"], reverse=True)
     payload = {
@@ -236,6 +237,8 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "granularity": args.granularity,
         "scan_count": len(candidates),
         "held_positions": sorted(held),
+        "exit_opportunities": managed_actions,
+        "entry_opportunities": entry_candidates,
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -379,6 +382,7 @@ def evaluate_managed_exit(
         return {
             "instrument": instrument,
             "action": "close",
+            "kind": "exit",
             "reason": "managed_close_long",
             "score": opportunity_score("sell", metadata, latest_atr) + 1.0,
             "confidence": 0.75,
@@ -394,6 +398,7 @@ def evaluate_managed_exit(
         return {
             "instrument": instrument,
             "action": "close",
+            "kind": "exit",
             "reason": "managed_close_short",
             "score": opportunity_score("buy", metadata, latest_atr) + 1.0,
             "confidence": 0.75,
@@ -409,6 +414,7 @@ def evaluate_managed_exit(
         return {
             "instrument": instrument,
             "action": "close",
+            "kind": "exit",
             "reason": "managed_long_decay",
             "score": 1.0,
             "confidence": 0.7,
@@ -424,6 +430,7 @@ def evaluate_managed_exit(
         return {
             "instrument": instrument,
             "action": "close",
+            "kind": "exit",
             "reason": "managed_short_decay",
             "score": 1.0,
             "confidence": 0.7,

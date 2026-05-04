@@ -147,7 +147,8 @@ class MonitorApp(tk.Tk):
         self._card(scroll_frame, "Runtime State", self.state_var)
         self.watchlist_frame = ttk.Frame(scroll_frame, style="Card.TFrame", padding=14)
         self.watchlist_frame.pack(fill="x", pady=6)
-        ttk.Label(self.watchlist_frame, text="Watchlist", style="Sub.TLabel").pack(anchor="w")
+        self.watchlist_title = ttk.Label(self.watchlist_frame, text="Watchlist", style="Sub.TLabel")
+        self.watchlist_title.pack(anchor="w")
         self.watchlist_container = tk.Frame(self.watchlist_frame, bg="#111827")
         self.watchlist_container.pack(fill="x", pady=(6, 0))
 
@@ -216,6 +217,10 @@ class MonitorApp(tk.Tk):
         for child in self.watchlist_container.winfo_children():
             child.destroy()
 
+        exits = scan.get("exit_opportunities") or []
+        entries = scan.get("entry_opportunities") or []
+        self.watchlist_title.configure(text=f"Watchlist  exits {len(exits)}  entries {len(entries)}")
+
         rows = (scan.get("top_opportunities") or [])[:5]
         if not rows:
             tk.Label(
@@ -230,15 +235,17 @@ class MonitorApp(tk.Tk):
             return
 
         for row in rows:
+            kind = str(row.get("kind", "entry")).upper()
+            color = "#166534" if kind == "EXIT" else "#1d4ed8"
             text = (
-                f"{row.get('instrument')}  {str(row.get('action', 'n/a')).upper()}  "
+                f"{kind}  {row.get('instrument')}  {str(row.get('action', 'n/a')).upper()}  "
                 f"score {float(row.get('score', 0.0)):.3f}  "
                 f"reason {row.get('reason', 'n/a')}"
             )
             tk.Label(
                 self.watchlist_container,
                 text=text,
-                bg="#111827",
+                bg=color,
                 fg="#f8fafc",
                 font=("Consolas", 10),
                 anchor="w",

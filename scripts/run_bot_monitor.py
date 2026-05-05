@@ -266,7 +266,11 @@ class MonitorApp(tk.Tk):
 
         exits = scan.get("exit_opportunities") or []
         entries = scan.get("entry_opportunities") or []
-        self.watchlist_title.configure(text=f"Watchlist  exits {len(exits)}  entries {len(entries)}")
+        scope = scan.get("instrument_scope", "n/a")
+        instruments = scan.get("instrument_count", "n/a")
+        self.watchlist_title.configure(
+            text=f"Watchlist  {scope}  instruments {instruments}  exits {len(exits)}  entries {len(entries)}"
+        )
 
         rows = (scan.get("top_opportunities") or [])[:5]
         if not rows:
@@ -305,14 +309,14 @@ class MonitorApp(tk.Tk):
             self.long_watchlist_container,
             self.long_watchlist_title,
             scan.get("long_opportunities") or [],
-            "LONG",
+            "LONG PRESSURE",
             "#166534",
         )
         self._render_side_watchlist(
             self.short_watchlist_container,
             self.short_watchlist_title,
             scan.get("short_opportunities") or [],
-            "SHORT",
+            "SHORT PRESSURE",
             "#1d4ed8",
         )
 
@@ -445,15 +449,17 @@ def format_state_summary(state: dict) -> str:
 def format_decision_summary(decision: dict) -> str:
     if not decision:
         return "No decision summary yet"
+    required = decision.get("required_score", decision.get("min_submit_score"))
     return "\n".join(
         [
             f"Decision: {decision.get('decision', 'n/a')}  Reason: {decision.get('reason', 'n/a')}",
             f"Instrument: {decision.get('instrument', 'n/a')}  Action: {decision.get('action', 'n/a')}",
             f"Filter: {decision.get('filter_reason', 'n/a')}",
-            f"Score: {_fmt(decision.get('score'))}  Need: {_fmt(decision.get('min_submit_score'))}",
+            f"Score: {_fmt(decision.get('score'))}  Need: {_fmt(required)}",
             f"Gap: {_fmt(decision.get('score_gap'))}",
             f"Long: {_fmt(decision.get('long_score'))}  Short: {_fmt(decision.get('short_score'))}",
             f"Regime: {_fmt(decision.get('regime_score'))}  RSI: {_fmt(decision.get('rsi'))}",
+            f"Fib retrace: {_fmt(decision.get('fib_retracement'))}",
             f"Submitted: {decision.get('submitted_count', 0)}  Instruments: {', '.join(decision.get('instruments') or []) or 'none'}",
         ]
     )

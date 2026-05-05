@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .execution import AccountSnapshot, TradeAction
-from .indicators import atr, ema, extract_closes, rsi
+from .indicators import atr, ema, extract_closes, extract_highs, extract_lows, rsi
 
 
 @dataclass(frozen=True)
@@ -27,6 +27,7 @@ class StrategyConfig:
     trailing_atr_multiple: float = 1.25
     max_hold_candles: int = 24
     break_even_atr_multiple: float = 1.0
+    fib_lookback: int = 55
 
 
 def moving_average_crossover(
@@ -43,14 +44,15 @@ def moving_average_crossover(
     separation = abs(fast_ma - slow_ma)
     latest_atr = atr(candles, config.atr_period)
     latest_rsi = rsi(closes, min(14, len(closes) - 1))
+    fib_ratio = retracement_ratio(candles, lookback=config.fib_lookback)
     current_units = 0
     nav = 100000.0
     if snapshot is not None:
         current_units = snapshot.positions_by_instrument.get(config.instrument, 0)
         nav = snapshot.nav or nav
 
-    long_score = score_long(fast_ma, slow_ma, separation, latest_rsi, latest_atr, last_price)
-    short_score = score_short(fast_ma, slow_ma, separation, latest_rsi, latest_atr, last_price)
+    long_score = score_long(fast_ma, slow_ma, separation, latest_rsi, latest_atr, last_price, fib_ratio)
+    short_score = score_short(fast_ma, slow_ma, separation, latest_rsi, latest_atr, last_price, fib_ratio)
     regime_score = score_regime(separation, latest_atr, last_price)
     units = position_size_from_atr(
         nav=nav,
@@ -69,6 +71,7 @@ def moving_average_crossover(
         "regime_score": regime_score,
         "atr": latest_atr,
         "rsi": latest_rsi,
+        "fib_retracement": fib_ratio,
     }
 
     if regime_score < config.regime_score_threshold:
@@ -125,7 +128,15 @@ def moving_average_crossover(
     return TradeAction(action="hold", instrument=config.instrument, reason="score_below_threshold", metadata=common_meta)
 
 
-def score_long(fast_ma: float, slow_ma: float, separation: float, latest_rsi: float, latest_atr: float, price: float) -> float:
+def score_long(
+    fast_ma: float,
+    slow_ma: float,
+    separation: float,
+    latest_rsi: float,
+    latest_atr: float,
+    price: float,
+    fib_ratio: float | None = None,
+) -> float:
     score = 0.0
     if fast_ma > slow_ma:
         score += 1.25
@@ -137,10 +148,20 @@ def score_long(fast_ma: float, slow_ma: float, separation: float, latest_rsi: fl
         score -= 0.5
     if latest_atr / max(price, 1e-9) > 0.00012:
         score += 0.35
+    if fast_ma > slow_ma and fib_ratio is not None and 0.382 <= fib_ratio <= 0.618:
+        score += 0.35
     return score
 
 
-def score_short(fast_ma: float, slow_ma: float, separation: float, latest_rsi: float, latest_atr: float, price: float) -> float:
+def score_short(
+    fast_ma: float,
+    slow_ma: float,
+    separation: float,
+    latest_rsi: float,
+    latest_atr: float,
+    price: float,
+    fib_ratio: float | None = None,
+) -> float:
     score = 0.0
     if fast_ma < slow_ma:
         score += 1.25
@@ -151,6 +172,8 @@ def score_short(fast_ma: float, slow_ma: float, separation: float, latest_rsi: f
     if latest_rsi < 28:
         score -= 0.5
     if latest_atr / max(price, 1e-9) > 0.00012:
+        score += 0.35
+    if fast_ma < slow_ma and fib_ratio is not None and 0.382 <= fib_ratio <= 0.618:
         score += 0.35
     return score
 
@@ -173,3 +196,17 @@ def position_size_from_atr(*, nav: float, atr_value: float, risk_fraction: float
     stop_distance = max(atr_value * atr_stop_multiple, 1e-6)
     units = int(risk_budget / stop_distance)
     return max(1, min(max_units, units))
+
+
+def retracement_ratio(candles: list[dict], *, lookback: int = 55) -> float | None:
+    highs = extract_highs(candles[-lookback:])
+    lows = extract_lows(candles[-lookback:])
+    closes = extract_closes(candles[-lookback:])
+    if not highs or not lows or not closes:
+        return None
+    swing_high = max(highs)
+    swing_low = min(lows)
+    swing_range = swing_high - swing_low
+    if swing_range <= 0:
+        return None
+    return max(0.0, min(1.0, (closes[-1] - swing_low) / swing_range))

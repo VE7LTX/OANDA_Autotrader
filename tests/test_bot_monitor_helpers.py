@@ -70,12 +70,14 @@ def test_format_decision_summary_is_human_readable() -> None:
             "action": "sell",
             "score": 5.2,
             "min_submit_score": 5.4,
+            "required_score": 6.2,
             "score_gap": 0.2,
             "filter_reason": "regime_filter_hold",
             "long_score": 1.1,
             "short_score": 2.85,
             "regime_score": 1.1,
             "rsi": 42.0,
+            "fib_retracement": 0.5,
         }
     )
 
@@ -84,3 +86,5 @@ def test_format_decision_summary_is_human_readable() -> None:
     assert "NZD_JPY" in summary
     assert "Filter: regime_filter_hold" in summary
     assert "Short: 2.850" in summary
+    assert "Need: 6.200" in summary
+    assert "Fib retrace: 0.500" in summary

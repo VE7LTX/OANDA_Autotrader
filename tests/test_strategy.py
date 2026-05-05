@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from oanda_autotrader.execution import AccountSnapshot
-from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover
+from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover, retracement_ratio, score_long
 
 
 def _candle(price: float, ts: str = "2026-05-03T19:00:00Z") -> dict:
@@ -97,3 +97,31 @@ def test_strategy_closes_long_before_short() -> None:
     )
     assert action.action == "close"
     assert action.reason == "close_long_before_short"
+
+
+def test_strategy_records_fib_retracement_metadata() -> None:
+    candles = [_candle(1.30 + (i * 0.001)) for i in range(25)]
+
+    action = moving_average_crossover(
+        candles,
+        StrategyConfig(instrument="USD_CAD", fast_window=5, slow_window=20, units=100),
+    )
+
+    assert action.metadata is not None
+    assert 0.0 <= action.metadata["fib_retracement"] <= 1.0
+
+
+def test_retracement_ratio_uses_recent_swing_range() -> None:
+    candles = [_candle(1.00), _candle(1.10), _candle(1.05)]
+
+    ratio = retracement_ratio(candles, lookback=3)
+
+    assert ratio is not None
+    assert 0.40 < ratio < 0.60
+
+
+def test_fib_zone_adds_confluence_without_overriding_trend() -> None:
+    baseline = score_long(1.01, 1.00, 0.01, 60.0, 0.001, 1.02, None)
+    confluence = score_long(1.01, 1.00, 0.01, 60.0, 0.001, 1.02, 0.5)
+
+    assert confluence > baseline

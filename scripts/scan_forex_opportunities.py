@@ -138,9 +138,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--output", default="data/forex_opportunity_scan.json")
     parser.add_argument("--include-held", action="store_true")
-    parser.add_argument("--majors-only", action="store_true", default=True, help="Limit scanning to the most liquid major FX pairs.")
+    parser.add_argument("--majors-only", action="store_true", help="Limit scanning to the most liquid major FX pairs.")
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
     parser.add_argument("--min-submit-score", type=float, default=5.4)
+    parser.add_argument("--non-liquid-min-submit-score", type=float, default=6.2)
     parser.add_argument("--max-new-trades", type=int, default=5)
     parser.add_argument("--max-trades-per-hour", type=int, default=2)
     parser.add_argument("--instrument-cooldown-minutes", type=int, default=180)
@@ -186,13 +187,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     summary = account_client.get_account_summary(app_config.account_id)
     snapshot = snapshot_from_account_payload(app_config, details, summary)
     tradeable = account_client.get_instruments(app_config.account_id).get("instruments", [])
-    instruments = [
-        str(item.get("name"))
-        for item in tradeable
-        if isinstance(item, dict)
-        and is_fx_pair(str(item.get("name") or ""))
-        and (not args.majors_only or is_major_fx_pair(str(item.get("name") or "")))
-    ]
+    instruments = select_scan_instruments(tradeable, majors_only=args.majors_only)
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -308,12 +303,14 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "group": app_config.group_name,
         "environment": app_config.environment,
         "granularity": args.granularity,
+        "instrument_scope": "liquid_fx" if args.majors_only else "all_fx",
+        "instrument_count": len(instruments),
         "scan_count": len(candidates),
         "held_positions": sorted(held),
         "exit_opportunities": managed_actions,
         "entry_opportunities": entry_candidates,
-        "long_opportunities": [item for item in entry_candidates if item.get("action") == "buy"],
-        "short_opportunities": [item for item in entry_candidates if item.get("action") == "sell"],
+        "long_opportunities": rank_directional_watchlist(entry_candidates, "long_score"),
+        "short_opportunities": rank_directional_watchlist(entry_candidates, "short_score"),
         "scan_errors": scan_errors,
         "top_opportunities": candidates[: args.top],
         "submission": None,
@@ -409,6 +406,28 @@ def is_major_fx_pair(name: str) -> bool:
     if not is_fx_pair(name):
         return False
     return name in LIQUID_FX_PAIRS
+
+
+def select_scan_instruments(tradeable: list[dict[str, object]], *, majors_only: bool) -> list[str]:
+    instruments = {
+        str(item.get("name"))
+        for item in tradeable
+        if isinstance(item, dict) and is_fx_pair(str(item.get("name") or ""))
+    }
+    if majors_only:
+        instruments = {name for name in instruments if is_major_fx_pair(name)}
+    return sorted(instruments)
+
+
+def rank_directional_watchlist(candidates: list[dict[str, object]], score_key: str) -> list[dict[str, object]]:
+    return sorted(
+        candidates,
+        key=lambda item: (
+            float((item.get("metadata") or {}).get(score_key, 0.0) or 0.0),
+            float(item.get("score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
 
 
 def fetch_candles_safe(
@@ -624,7 +643,10 @@ def maybe_submit_candidates(
     for candidate in ordered_candidates:
         candidate_action = str(candidate.get("action") or "").lower()
         candidate_score = float(candidate.get("score", 0.0) or 0.0)
-        if candidate_action != "close" and candidate_score < args.min_submit_score:
+        required_score = required_submit_score(str(candidate.get("instrument") or ""), args)
+        if candidate_action != "close" and candidate_score < required_score:
+            candidate["required_score"] = required_score
+            candidate["blocked_reason"] = "below_submit_threshold"
             continue
         action = build_trade_action(candidate)
         if action.action == "hold":
@@ -716,6 +738,7 @@ def build_decision_summary(
             "submitted_count": len(submitted),
             "instruments": [item.get("instrument") for item in submitted],
             "min_submit_score": args.min_submit_score,
+            "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
         }
 
     actionable = [
@@ -730,6 +753,7 @@ def build_decision_summary(
             "reason": "no_actionable_candidates",
             "submitted_count": 0,
             "min_submit_score": args.min_submit_score,
+            "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
         }
         if top:
             summary.update(
@@ -748,7 +772,9 @@ def build_decision_summary(
 
     top = max(actionable, key=lambda item: float(item.get("score", 0.0) or 0.0))
     top_score = float(top.get("score", 0.0) or 0.0)
-    if top_score < args.min_submit_score:
+    required_score = required_submit_score(str(top.get("instrument") or ""), args)
+    metadata = top.get("metadata") or {}
+    if top_score < required_score:
         reason = "below_submit_threshold"
     else:
         reason = str(top.get("blocked_reason") or "not_selected")
@@ -758,10 +784,31 @@ def build_decision_summary(
         "submitted_count": 0,
         "instrument": top.get("instrument"),
         "action": top.get("action"),
+        "filter_reason": top.get("reason"),
         "score": top_score,
-        "score_gap": max(0.0, float(args.min_submit_score) - top_score),
+        "score_gap": max(0.0, required_score - top_score),
+        "required_score": required_score,
         "min_submit_score": args.min_submit_score,
+        "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
+        "long_score": metadata.get("long_score"),
+        "short_score": metadata.get("short_score"),
+        "regime_score": metadata.get("regime_score"),
+        "rsi": metadata.get("rsi"),
+        "fib_retracement": metadata.get("fib_retracement"),
     }
+
+
+def required_submit_score(instrument: str, args: argparse.Namespace) -> float:
+    if is_major_fx_pair(instrument):
+        return float(getattr(args, "min_submit_score", 0.0) or 0.0)
+    return float(
+        getattr(
+            args,
+            "non_liquid_min_submit_score",
+            getattr(args, "min_submit_score", 0.0),
+        )
+        or 0.0
+    )
 
 
 def entry_throttle_reason(

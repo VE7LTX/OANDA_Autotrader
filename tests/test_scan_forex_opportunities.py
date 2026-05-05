@@ -18,6 +18,9 @@ from scripts.scan_forex_opportunities import (
     is_major_fx_pair,
     maybe_submit_candidates,
     opportunity_score,
+    rank_directional_watchlist,
+    required_submit_score,
+    select_scan_instruments,
 )
 
 
@@ -44,6 +47,38 @@ def test_is_major_fx_pair_filters_liquidity() -> None:
     assert is_major_fx_pair("GBP_USD") is True
     assert is_major_fx_pair("EUR_GBP") is True
     assert is_major_fx_pair("EUR_NOK") is False
+
+
+def test_select_scan_instruments_defaults_to_all_tradeable_fx() -> None:
+    tradeable = [
+        {"name": "EUR_USD"},
+        {"name": "EUR_NOK"},
+        {"name": "XAU_USD"},
+        {"name": "GBP_USD"},
+        {"name": "EUR_USD"},
+    ]
+
+    assert select_scan_instruments(tradeable, majors_only=False) == ["EUR_NOK", "EUR_USD", "GBP_USD"]
+    assert select_scan_instruments(tradeable, majors_only=True) == ["EUR_USD", "GBP_USD"]
+
+
+def test_rank_directional_watchlist_includes_hold_pressure() -> None:
+    candidates = [
+        {"instrument": "EUR_USD", "action": "hold", "score": 1.0, "metadata": {"long_score": 1.2}},
+        {"instrument": "GBP_USD", "action": "hold", "score": 0.5, "metadata": {"long_score": 2.8}},
+        {"instrument": "AUD_USD", "action": "buy", "score": 5.0, "metadata": {"long_score": 2.8}},
+    ]
+
+    ranked = rank_directional_watchlist(candidates, "long_score")
+
+    assert [item["instrument"] for item in ranked] == ["AUD_USD", "GBP_USD", "EUR_USD"]
+
+
+def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+
+    assert required_submit_score("EUR_USD", args) == 5.4
+    assert required_submit_score("CHF_ZAR", args) == 6.2
 
 
 def test_build_trade_action_preserves_close_actions() -> None:
@@ -174,18 +209,30 @@ def test_entry_throttle_limits_currency_family() -> None:
 
 
 def test_decision_summary_reports_below_threshold() -> None:
-    args = SimpleNamespace(min_submit_score=5.4)
-    candidates = [{"instrument": "NZD_JPY", "action": "sell", "score": 5.2}]
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    candidates = [
+        {
+            "instrument": "NZD_JPY",
+            "action": "sell",
+            "score": 5.2,
+            "reason": "short_score_passed",
+            "metadata": {"short_score": 2.85, "fib_retracement": 0.5},
+        }
+    ]
 
     summary = build_decision_summary(candidates, [], args)
 
     assert summary["decision"] == "watching"
     assert summary["reason"] == "below_submit_threshold"
     assert summary["score_gap"] == 0.20000000000000018
+    assert summary["required_score"] == 5.4
+    assert summary["filter_reason"] == "short_score_passed"
+    assert summary["short_score"] == 2.85
+    assert summary["fib_retracement"] == 0.5
 
 
 def test_decision_summary_reports_blocked_candidate() -> None:
-    args = SimpleNamespace(min_submit_score=5.4)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
     candidates = [
         {
             "instrument": "USD_JPY",
@@ -202,7 +249,7 @@ def test_decision_summary_reports_blocked_candidate() -> None:
 
 
 def test_decision_summary_reports_submissions() -> None:
-    args = SimpleNamespace(min_submit_score=5.4)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
     submissions = [
         {"instrument": "GBP_USD", "result": {"submitted": True}},
         {"instrument": "NZD_JPY", "result": {"submitted": True}},
@@ -216,7 +263,7 @@ def test_decision_summary_reports_submissions() -> None:
 
 
 def test_decision_summary_reports_best_watched_candidate() -> None:
-    args = SimpleNamespace(min_submit_score=5.4)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
     candidates = [
         {
             "instrument": "USD_JPY",
@@ -264,6 +311,7 @@ def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
     monkeypatch.setattr("scripts.scan_forex_opportunities.PracticeExecutionEngine", FakeEngine)
     args = SimpleNamespace(
         min_submit_score=5.4,
+        non_liquid_min_submit_score=6.2,
         max_units=100,
         max_open_trades=5,
         max_gross_position_units=500,

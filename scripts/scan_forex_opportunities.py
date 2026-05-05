@@ -148,6 +148,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--instrument-cooldown-minutes", type=int, default=180)
     parser.add_argument("--currency-cooldown-minutes", type=int, default=60)
     parser.add_argument("--max-session-loss", type=float, default=1.0)
+    parser.add_argument("--disable-adaptive-quality", action="store_true")
+    parser.add_argument("--adaptive-min-atr-ratio", type=float, default=0.00012)
+    parser.add_argument("--adaptive-recovery-atr-ratio", type=float, default=0.00035)
+    parser.add_argument("--adaptive-max-avg-loss", type=float, default=0.08)
+    parser.add_argument("--adaptive-max-avg-half-spread-cost", type=float, default=0.08)
+    parser.add_argument("--adaptive-max-penalty", type=float, default=1.2)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
@@ -190,6 +196,8 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     tradeable = account_client.get_instruments(app_config.account_id).get("instruments", [])
     instruments = select_scan_instruments(tradeable, majors_only=args.majors_only)
     price_precisions = instrument_price_precisions(tradeable)
+    state = load_state_file(Path(args.state_path))
+    instrument_quality = state.get("instrument_quality") or {}
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -265,9 +273,22 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             latest_atr = atr(candles, inst_strategy.atr_period)
         except ValueError:
             pass
+        latest_close = latest_candle_close(candles)
         score = opportunity_score(action.action, action.metadata or {}, latest_atr)
+        score, quality = apply_adaptive_quality(
+            instrument=instrument,
+            score=score,
+            latest_atr=latest_atr,
+            latest_price=latest_close,
+            instrument_quality=instrument_quality,
+            args=args,
+        )
         if score < args.min_score:
             continue
+        metadata = dict(action.metadata or {})
+        metadata["atr_ratio"] = quality.get("atr_ratio")
+        metadata["quality_penalty"] = quality.get("penalty")
+        metadata["quality_reasons"] = quality.get("reasons")
         entry_candidates.append(
             {
                 "instrument": instrument,
@@ -275,12 +296,16 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 "kind": "entry",
                 "reason": action.reason,
                 "score": score,
+                "raw_score": quality.get("raw_score", score),
                 "confidence": action.confidence,
                 "units": action.units,
                 "stop_loss_price": action.stop_loss_price,
                 "take_profit_price": action.take_profit_price,
-                "metadata": action.metadata,
+                "metadata": metadata,
                 "atr": latest_atr,
+                "atr_ratio": quality.get("atr_ratio"),
+                "quality_penalty": quality.get("penalty"),
+                "quality_reasons": quality.get("reasons"),
                 "has_position": instrument in held,
             }
         )
@@ -396,6 +421,72 @@ def opportunity_score(action: str, metadata: dict[str, object], latest_atr: floa
         momentum = 0.0
 
     return base + regime_score * 0.5 + momentum + min(0.5, separation * 1000.0) + atr_bonus
+
+
+def latest_candle_close(candles: list[dict]) -> float | None:
+    if not candles:
+        return None
+    try:
+        return float((candles[-1].get("mid") or {}).get("c"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def apply_adaptive_quality(
+    *,
+    instrument: str,
+    score: float,
+    latest_atr: float | None,
+    latest_price: float | None,
+    instrument_quality: dict[str, object],
+    args: argparse.Namespace,
+) -> tuple[float, dict[str, object]]:
+    raw_score = float(score)
+    if bool(getattr(args, "disable_adaptive_quality", False)):
+        return raw_score, {"raw_score": raw_score, "penalty": 0.0, "reasons": [], "atr_ratio": None}
+
+    atr_ratio = None
+    if latest_atr is not None and latest_price and latest_price > 0:
+        atr_ratio = float(latest_atr) / float(latest_price)
+
+    penalty = 0.0
+    reasons: list[str] = []
+    min_atr_ratio = float(getattr(args, "adaptive_min_atr_ratio", 0.0) or 0.0)
+    if atr_ratio is not None and min_atr_ratio > 0 and atr_ratio < min_atr_ratio:
+        penalty += min(0.5, (min_atr_ratio - atr_ratio) / min_atr_ratio * 0.5)
+        reasons.append("low_atr")
+
+    stats = instrument_quality.get(instrument) if isinstance(instrument_quality, dict) else None
+    if isinstance(stats, dict):
+        closed_count = int(stats.get("closed_count", 0) or 0)
+        net_pl = float(stats.get("net_pl", 0.0) or 0.0)
+        avg_pl = net_pl / closed_count if closed_count else 0.0
+        max_avg_loss = abs(float(getattr(args, "adaptive_max_avg_loss", 0.0) or 0.0))
+        if closed_count >= 3 and avg_pl < -max_avg_loss:
+            penalty += min(0.5, abs(avg_pl) / max(max_avg_loss, 1e-9) * 0.25)
+            reasons.append("negative_recent_pl")
+
+        fill_count = int(stats.get("fill_count", 0) or 0)
+        half_spread_cost = float(stats.get("half_spread_cost", 0.0) or 0.0)
+        avg_half_spread = half_spread_cost / fill_count if fill_count else 0.0
+        max_half_spread = abs(float(getattr(args, "adaptive_max_avg_half_spread_cost", 0.0) or 0.0))
+        if fill_count >= 3 and max_half_spread > 0 and avg_half_spread > max_half_spread:
+            penalty += min(0.5, avg_half_spread / max_half_spread * 0.2)
+            reasons.append("high_spread_cost")
+
+    recovery_atr_ratio = float(getattr(args, "adaptive_recovery_atr_ratio", 0.0) or 0.0)
+    if penalty > 0 and atr_ratio is not None and recovery_atr_ratio > 0 and atr_ratio >= recovery_atr_ratio:
+        penalty *= 0.35
+        reasons.append("atr_recovery")
+
+    max_penalty = float(getattr(args, "adaptive_max_penalty", 1.2) or 1.2)
+    penalty = min(max_penalty, penalty)
+    return max(0.0, raw_score - penalty), {
+        "raw_score": raw_score,
+        "penalty": penalty,
+        "reasons": reasons,
+        "atr_ratio": atr_ratio,
+    }
 
 
 def is_fx_pair(name: str) -> bool:
@@ -719,6 +810,9 @@ def maybe_submit_candidates(
             "dry_run": app_config.environment != "practice",
             "result": result,
         })
+        executed = bool(result.get("submitted")) or bool(result.get("dry_run"))
+        if not executed:
+            continue
         projected_snapshot = engine.project_snapshot(projected_snapshot, action)
         if action.action != "close":
             new_entries_submitted += 1
@@ -1129,8 +1223,61 @@ def write_state_record(
         },
         "submission": payload.get("submission"),
         "decision_summary": payload.get("decision_summary"),
+        "instrument_quality": update_instrument_quality(
+            previous_state.get("instrument_quality") or {},
+            payload.get("submissions") or [],
+        ),
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def update_instrument_quality(
+    previous: dict[str, object],
+    submissions: list[dict[str, object]],
+    *,
+    decay: float = 0.985,
+) -> dict[str, dict[str, float]]:
+    quality: dict[str, dict[str, float]] = {}
+    if isinstance(previous, dict):
+        for instrument, stats in previous.items():
+            if not isinstance(stats, dict):
+                continue
+            quality[str(instrument)] = {
+                "fill_count": float(stats.get("fill_count", 0.0) or 0.0) * decay,
+                "closed_count": float(stats.get("closed_count", 0.0) or 0.0) * decay,
+                "net_pl": float(stats.get("net_pl", 0.0) or 0.0) * decay,
+                "half_spread_cost": float(stats.get("half_spread_cost", 0.0) or 0.0) * decay,
+            }
+
+    for submission in submissions:
+        if not isinstance(submission, dict):
+            continue
+        instrument = str(submission.get("instrument") or "")
+        if not instrument:
+            continue
+        result = submission.get("result") or {}
+        if not isinstance(result, dict) or not result.get("submitted"):
+            continue
+        response = result.get("response") or {}
+        fill = response.get("orderFillTransaction") if isinstance(response, dict) else None
+        if not isinstance(fill, dict):
+            continue
+        stats = quality.setdefault(
+            instrument,
+            {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+        )
+        stats["fill_count"] += 1.0
+        stats["half_spread_cost"] += _safe_number(fill.get("halfSpreadCost")) or 0.0
+        pl = _safe_number(fill.get("pl")) or 0.0
+        if pl or submission.get("action") == "close" or fill.get("tradesClosed") or fill.get("tradeReduced"):
+            stats["closed_count"] += 1.0
+            stats["net_pl"] += pl
+
+    return {
+        instrument: stats
+        for instrument, stats in quality.items()
+        if stats.get("fill_count", 0.0) >= 0.05 or abs(stats.get("net_pl", 0.0)) >= 0.001
+    }
 
 
 def _compact_account_summary(summary) -> dict[str, object]:

@@ -9,6 +9,7 @@ import scripts.scan_forex_opportunities as scanner
 from oanda_autotrader.execution import TradeAction
 
 from scripts.scan_forex_opportunities import (
+    apply_adaptive_quality,
     build_decision_summary,
     build_trade_action,
     describe_exception,
@@ -23,6 +24,7 @@ from scripts.scan_forex_opportunities import (
     rank_directional_watchlist,
     required_submit_score,
     select_scan_instruments,
+    update_instrument_quality,
 )
 
 
@@ -89,6 +91,65 @@ def test_rank_directional_watchlist_includes_hold_pressure() -> None:
     ranked = rank_directional_watchlist(candidates, "long_score")
 
     assert [item["instrument"] for item in ranked] == ["AUD_USD", "GBP_USD", "EUR_USD"]
+
+
+def test_adaptive_quality_penalizes_bad_stats_but_recovers_with_atr() -> None:
+    args = SimpleNamespace(
+        disable_adaptive_quality=False,
+        adaptive_min_atr_ratio=0.00012,
+        adaptive_recovery_atr_ratio=0.00035,
+        adaptive_max_avg_loss=0.05,
+        adaptive_max_avg_half_spread_cost=0.05,
+        adaptive_max_penalty=1.2,
+    )
+    quality = {"USD_HUF": {"closed_count": 5, "net_pl": -1.0, "fill_count": 5, "half_spread_cost": 0.6}}
+
+    weak_score, weak_meta = apply_adaptive_quality(
+        instrument="USD_HUF",
+        score=5.6,
+        latest_atr=0.01,
+        latest_price=310.0,
+        instrument_quality=quality,
+        args=args,
+    )
+    recovered_score, recovered_meta = apply_adaptive_quality(
+        instrument="USD_HUF",
+        score=5.6,
+        latest_atr=0.2,
+        latest_price=310.0,
+        instrument_quality=quality,
+        args=args,
+    )
+
+    assert weak_score < 5.6
+    assert "negative_recent_pl" in weak_meta["reasons"]
+    assert "high_spread_cost" in weak_meta["reasons"]
+    assert recovered_score > weak_score
+    assert "atr_recovery" in recovered_meta["reasons"]
+
+
+def test_update_instrument_quality_ignores_canceled_orders() -> None:
+    quality = update_instrument_quality(
+        {},
+        [
+            {
+                "instrument": "TRY_JPY",
+                "action": "sell",
+                "result": {"submitted": False, "status": "canceled", "cancel_reason": "MARKET_HALTED"},
+            },
+            {
+                "instrument": "EUR_AUD",
+                "action": "sell",
+                "result": {
+                    "submitted": True,
+                    "response": {"orderFillTransaction": {"pl": "0.0", "halfSpreadCost": "0.02"}},
+                },
+            },
+        ],
+    )
+
+    assert "TRY_JPY" not in quality
+    assert quality["EUR_AUD"]["fill_count"] == 1.0
 
 
 def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:

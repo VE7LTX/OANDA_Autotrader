@@ -458,19 +458,19 @@ def apply_adaptive_quality(
 
     stats = instrument_quality.get(instrument) if isinstance(instrument_quality, dict) else None
     if isinstance(stats, dict):
-        closed_count = int(stats.get("closed_count", 0) or 0)
+        closed_count = float(stats.get("closed_count", 0) or 0)
         net_pl = float(stats.get("net_pl", 0.0) or 0.0)
         avg_pl = net_pl / closed_count if closed_count else 0.0
         max_avg_loss = abs(float(getattr(args, "adaptive_max_avg_loss", 0.0) or 0.0))
-        if closed_count >= 3 and avg_pl < -max_avg_loss:
+        if closed_count >= 1.5 and avg_pl < -max_avg_loss:
             penalty += min(0.5, abs(avg_pl) / max(max_avg_loss, 1e-9) * 0.25)
             reasons.append("negative_recent_pl")
 
-        fill_count = int(stats.get("fill_count", 0) or 0)
+        fill_count = float(stats.get("fill_count", 0) or 0)
         half_spread_cost = float(stats.get("half_spread_cost", 0.0) or 0.0)
         avg_half_spread = half_spread_cost / fill_count if fill_count else 0.0
         max_half_spread = abs(float(getattr(args, "adaptive_max_avg_half_spread_cost", 0.0) or 0.0))
-        if fill_count >= 3 and max_half_spread > 0 and avg_half_spread > max_half_spread:
+        if fill_count >= 1.5 and max_half_spread > 0 and avg_half_spread > max_half_spread:
             penalty += min(0.5, avg_half_spread / max_half_spread * 0.2)
             reasons.append("high_spread_cost")
 
@@ -1235,7 +1235,7 @@ def update_instrument_quality(
     previous: dict[str, object],
     submissions: list[dict[str, object]],
     *,
-    decay: float = 0.985,
+    decay: float = 0.9985,
 ) -> dict[str, dict[str, float]]:
     quality: dict[str, dict[str, float]] = {}
     if isinstance(previous, dict):

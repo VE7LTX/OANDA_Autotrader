@@ -128,6 +128,30 @@ def test_adaptive_quality_penalizes_bad_stats_but_recovers_with_atr() -> None:
     assert "atr_recovery" in recovered_meta["reasons"]
 
 
+def test_adaptive_quality_penalizes_recent_decayed_losses() -> None:
+    args = SimpleNamespace(
+        disable_adaptive_quality=False,
+        adaptive_min_atr_ratio=0.00012,
+        adaptive_recovery_atr_ratio=0.00035,
+        adaptive_max_avg_loss=0.05,
+        adaptive_max_avg_half_spread_cost=0.05,
+        adaptive_max_penalty=1.2,
+    )
+    quality = {"GBP_ZAR": {"closed_count": 1.6, "net_pl": -0.40, "fill_count": 1.6, "half_spread_cost": 0.03}}
+
+    adjusted, meta = apply_adaptive_quality(
+        instrument="GBP_ZAR",
+        score=5.6,
+        latest_atr=0.004,
+        latest_price=22.5,
+        instrument_quality=quality,
+        args=args,
+    )
+
+    assert adjusted < 5.6
+    assert "negative_recent_pl" in meta["reasons"]
+
+
 def test_update_instrument_quality_ignores_canceled_orders() -> None:
     quality = update_instrument_quality(
         {},
@@ -150,6 +174,16 @@ def test_update_instrument_quality_ignores_canceled_orders() -> None:
 
     assert "TRY_JPY" not in quality
     assert quality["EUR_AUD"]["fill_count"] == 1.0
+
+
+def test_update_instrument_quality_uses_slow_decay() -> None:
+    quality = update_instrument_quality(
+        {"GBP_ZAR": {"fill_count": 10, "closed_count": 8, "net_pl": -2.0, "half_spread_cost": 0.8}},
+        [],
+    )
+
+    assert quality["GBP_ZAR"]["closed_count"] > 7.9
+    assert quality["GBP_ZAR"]["net_pl"] < -1.99
 
 
 def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:

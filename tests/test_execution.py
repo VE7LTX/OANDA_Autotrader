@@ -218,3 +218,65 @@ def test_engine_project_snapshot_tracks_new_positions_and_closes(app_config: App
     projected = engine.project_snapshot(closed, buy_action)
     assert projected.open_trade_count == 1
     assert projected.positions_by_instrument["EUR_USD"] == 100
+
+
+def test_engine_marks_market_halted_cancel_as_not_submitted(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(allowed_instruments=("USD_CAD",), max_units_per_trade=100),
+    )
+    engine.orders.create_order = lambda _account_id, _order: {
+        "orderCreateTransaction": {"id": "1", "type": "MARKET_ORDER"},
+        "orderCancelTransaction": {"id": "2", "type": "ORDER_CANCEL", "reason": "MARKET_HALTED"},
+    }
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=0,
+    )
+    action = TradeAction(
+        action="sell",
+        instrument="USD_CAD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.35000",
+    )
+
+    result = engine.execute(action, snapshot, dry_run=False)
+
+    assert result["submitted"] is False
+    assert result["status"] == "canceled"
+    assert result["cancel_reason"] == "MARKET_HALTED"
+
+
+def test_engine_marks_filled_market_order_as_submitted(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(allowed_instruments=("USD_CAD",), max_units_per_trade=100),
+    )
+    engine.orders.create_order = lambda _account_id, _order: {
+        "orderCreateTransaction": {"id": "1", "type": "MARKET_ORDER"},
+        "orderFillTransaction": {"id": "2", "type": "ORDER_FILL"},
+    }
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=10000.0,
+        balance=10000.0,
+        open_trade_count=0,
+    )
+    action = TradeAction(
+        action="sell",
+        instrument="USD_CAD",
+        units=100,
+        confidence=0.7,
+        stop_loss_price="1.35000",
+    )
+
+    result = engine.execute(action, snapshot, dry_run=False)
+
+    assert result["submitted"] is True
+    assert result["status"] == "filled"
+    assert result["cancel_reason"] is None

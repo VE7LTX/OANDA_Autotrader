@@ -195,11 +195,17 @@ class PracticeExecutionEngine:
             }
 
         response = self.orders.create_order(self.config.account_id, order)
+        fill = response.get("orderFillTransaction") if isinstance(response, dict) else None
+        cancel = response.get("orderCancelTransaction") if isinstance(response, dict) else None
+        submitted = bool(fill)
+        cancel_reason = cancel.get("reason") if isinstance(cancel, dict) else None
         return {
-            "submitted": True,
+            "submitted": submitted,
             "dry_run": False,
             "order": order,
             "response": response,
+            "status": "filled" if submitted else "canceled",
+            "cancel_reason": cancel_reason,
         }
 
     def _build_order(

@@ -28,6 +28,7 @@ class StrategyConfig:
     max_hold_candles: int = 24
     break_even_atr_multiple: float = 1.0
     fib_lookback: int = 55
+    price_precision: int | None = None
 
 
 def moving_average_crossover(
@@ -100,8 +101,8 @@ def moving_average_crossover(
             units=units,
             confidence=0.6,
             reason="long_score_passed",
-            stop_loss_price=f"{last_price - (latest_atr * config.atr_stop_multiple):.5f}",
-            take_profit_price=f"{last_price + (latest_atr * config.atr_target_multiple):.5f}",
+            stop_loss_price=format_instrument_price(config.instrument, last_price - (latest_atr * config.atr_stop_multiple), config.price_precision),
+            take_profit_price=format_instrument_price(config.instrument, last_price + (latest_atr * config.atr_target_multiple), config.price_precision),
             metadata=common_meta,
         )
 
@@ -116,8 +117,8 @@ def moving_average_crossover(
             units=units,
             confidence=0.6,
             reason="short_score_passed",
-            stop_loss_price=f"{last_price + (latest_atr * config.atr_stop_multiple):.5f}",
-            take_profit_price=f"{last_price - (latest_atr * config.atr_target_multiple):.5f}",
+            stop_loss_price=format_instrument_price(config.instrument, last_price + (latest_atr * config.atr_stop_multiple), config.price_precision),
+            take_profit_price=format_instrument_price(config.instrument, last_price - (latest_atr * config.atr_target_multiple), config.price_precision),
             metadata=common_meta,
         )
 
@@ -210,3 +211,12 @@ def retracement_ratio(candles: list[dict], *, lookback: int = 55) -> float | Non
     if swing_range <= 0:
         return None
     return max(0.0, min(1.0, (closes[-1] - swing_low) / swing_range))
+
+
+def instrument_price_precision(instrument: str) -> int:
+    return 3 if str(instrument or "").endswith("_JPY") else 5
+
+
+def format_instrument_price(instrument: str, price: float, precision: int | None = None) -> str:
+    digits = instrument_price_precision(instrument) if precision is None else int(precision)
+    return f"{price:.{digits}f}"

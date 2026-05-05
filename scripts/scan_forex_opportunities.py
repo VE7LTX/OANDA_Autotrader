@@ -189,6 +189,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     snapshot = snapshot_from_account_payload(app_config, details, summary)
     tradeable = account_client.get_instruments(app_config.account_id).get("instruments", [])
     instruments = select_scan_instruments(tradeable, majors_only=args.majors_only)
+    price_precisions = instrument_price_precisions(tradeable)
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -256,6 +257,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             trailing_atr_multiple=strategy.trailing_atr_multiple,
             max_hold_candles=strategy.max_hold_candles,
             break_even_atr_multiple=strategy.break_even_atr_multiple,
+            price_precision=price_precisions.get(instrument),
         )
         action = moving_average_crossover(candles, inst_strategy, snapshot)
         latest_atr = None
@@ -291,6 +293,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 instruments=instruments,
                 args=args,
                 strategy=exit_strategy,
+                price_precisions=price_precisions,
                 instruments_client=instruments_client,
                 scan_errors=scan_errors,
             )
@@ -420,6 +423,21 @@ def select_scan_instruments(tradeable: list[dict[str, object]], *, majors_only: 
     return sorted(instruments)
 
 
+def instrument_price_precisions(tradeable: list[dict[str, object]]) -> dict[str, int]:
+    precisions: dict[str, int] = {}
+    for item in tradeable:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if not is_fx_pair(name):
+            continue
+        try:
+            precisions[name] = int(item.get("displayPrecision"))
+        except (TypeError, ValueError):
+            continue
+    return precisions
+
+
 def rank_directional_watchlist(candidates: list[dict[str, object]], score_key: str) -> list[dict[str, object]]:
     return sorted(
         candidates,
@@ -465,6 +483,7 @@ def build_managed_exit_candidates(
     instruments: list[str],
     args: argparse.Namespace,
     strategy: StrategyConfig,
+    price_precisions: dict[str, int] | None,
     instruments_client,
     scan_errors: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
@@ -502,6 +521,7 @@ def build_managed_exit_candidates(
             trailing_atr_multiple=strategy.trailing_atr_multiple,
             max_hold_candles=strategy.max_hold_candles,
             break_even_atr_multiple=strategy.break_even_atr_multiple,
+            price_precision=(price_precisions or {}).get(instrument),
         )
         candidate = evaluate_managed_exit(instrument, units, candles, snapshot, inst_strategy)
         if candidate is not None:
@@ -920,17 +940,23 @@ def build_trade_action(candidate: dict[str, object]):
     )
 
 
+def compact_error_text(value: object, *, limit: int = 240) -> str:
+    text = " ".join(str(value or "").split())
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text
+
+
 def describe_exception(exc: Exception) -> str:
+    message = compact_error_text(exc)
     response = getattr(exc, "response", None)
     if response is None:
-        return str(exc)
+        return message
     status = getattr(response, "status_code", None)
-    text = getattr(response, "text", "") or ""
-    if len(text) > 500:
-        text = text[:500] + "..."
+    text = compact_error_text(getattr(response, "text", "") or "")
     if text:
-        return f"{exc} | response={status}: {text}"
-    return str(exc)
+        return f"{message} | response={status}: {text}"
+    return message
 
 
 def write_cycle_error(audit_path: Path, state_path: Path, *, cycle: int, error: str) -> None:

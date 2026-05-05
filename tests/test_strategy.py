@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 from oanda_autotrader.execution import AccountSnapshot
-from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover, retracement_ratio, score_long
+from oanda_autotrader.strategy import (
+    StrategyConfig,
+    format_instrument_price,
+    moving_average_crossover,
+    retracement_ratio,
+    score_long,
+)
 
 
 def _candle(price: float, ts: str = "2026-05-03T19:00:00Z") -> dict:
@@ -97,6 +103,33 @@ def test_strategy_closes_long_before_short() -> None:
     )
     assert action.action == "close"
     assert action.reason == "close_long_before_short"
+
+
+def test_strategy_formats_jpy_prices_to_three_decimals() -> None:
+    candles = [_candle(200.0 - (i * 0.01)) for i in range(25)]
+
+    action = moving_average_crossover(
+        candles,
+        StrategyConfig(
+            instrument="GBP_JPY",
+            fast_window=5,
+            slow_window=20,
+            units=100,
+            short_score_threshold=1.5,
+        ),
+    )
+
+    assert action.action == "sell"
+    assert action.stop_loss_price is not None
+    assert len(action.stop_loss_price.rsplit(".", 1)[1]) == 3
+    assert action.take_profit_price is not None
+    assert len(action.take_profit_price.rsplit(".", 1)[1]) == 3
+
+
+def test_format_instrument_price_uses_pair_precision() -> None:
+    assert format_instrument_price("GBP_JPY", 212.69071) == "212.691"
+    assert format_instrument_price("HKD_JPY", 16.123456, 5) == "16.12346"
+    assert format_instrument_price("EUR_USD", 1.123456) == "1.12346"
 
 
 def test_strategy_records_fib_retracement_metadata() -> None:

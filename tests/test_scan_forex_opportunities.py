@@ -16,6 +16,7 @@ from scripts.scan_forex_opportunities import (
     fetch_candles_safe,
     is_fx_pair,
     is_major_fx_pair,
+    instrument_price_precisions,
     maybe_submit_candidates,
     non_liquid_trade_blocked,
     opportunity_score,
@@ -61,6 +62,21 @@ def test_select_scan_instruments_defaults_to_all_tradeable_fx() -> None:
 
     assert select_scan_instruments(tradeable, majors_only=False) == ["EUR_NOK", "EUR_USD", "GBP_USD"]
     assert select_scan_instruments(tradeable, majors_only=True) == ["EUR_USD", "GBP_USD"]
+
+
+def test_instrument_price_precisions_use_oanda_metadata() -> None:
+    tradeable = [
+        {"name": "GBP_JPY", "displayPrecision": 3},
+        {"name": "HKD_JPY", "displayPrecision": 5},
+        {"name": "XAU_USD", "displayPrecision": 3},
+        {"name": "EUR_USD", "displayPrecision": "5"},
+    ]
+
+    assert instrument_price_precisions(tradeable) == {
+        "EUR_USD": 5,
+        "GBP_JPY": 3,
+        "HKD_JPY": 5,
+    }
 
 
 def test_rank_directional_watchlist_includes_hold_pressure() -> None:
@@ -161,6 +177,19 @@ def test_describe_exception_includes_response_body() -> None:
 
     assert "bad stop loss" in description
     assert "response=400" in description
+
+
+def test_describe_exception_compacts_large_response_body() -> None:
+    response = requests.Response()
+    response.status_code = 504
+    response._content = ("<html>\n" + ("x" * 1000) + "\n</html>").encode()
+    exc = requests.HTTPError("504 Server Error", response=response)
+
+    description = describe_exception(exc)
+
+    assert "\n" not in description
+    assert len(description) < 520
+    assert description.endswith("...")
 
 
 def test_entry_throttle_stops_after_session_loss() -> None:

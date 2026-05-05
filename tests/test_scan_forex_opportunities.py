@@ -17,6 +17,7 @@ from scripts.scan_forex_opportunities import (
     is_fx_pair,
     is_major_fx_pair,
     maybe_submit_candidates,
+    non_liquid_trade_blocked,
     opportunity_score,
     rank_directional_watchlist,
     required_submit_score,
@@ -79,6 +80,15 @@ def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:
 
     assert required_submit_score("EUR_USD", args) == 5.4
     assert required_submit_score("CHF_ZAR", args) == 6.2
+
+
+def test_non_liquid_trade_gate_blocks_exotics_by_default() -> None:
+    args = SimpleNamespace(allow_non_liquid_trades=False)
+    permissive_args = SimpleNamespace(allow_non_liquid_trades=True)
+
+    assert non_liquid_trade_blocked("CHF_ZAR", args) is True
+    assert non_liquid_trade_blocked("EUR_USD", args) is False
+    assert non_liquid_trade_blocked("CHF_ZAR", permissive_args) is False
 
 
 def test_build_trade_action_preserves_close_actions() -> None:
@@ -209,7 +219,7 @@ def test_entry_throttle_limits_currency_family() -> None:
 
 
 def test_decision_summary_reports_below_threshold() -> None:
-    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2, allow_non_liquid_trades=False)
     candidates = [
         {
             "instrument": "NZD_JPY",
@@ -232,7 +242,7 @@ def test_decision_summary_reports_below_threshold() -> None:
 
 
 def test_decision_summary_reports_blocked_candidate() -> None:
-    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2, allow_non_liquid_trades=False)
     candidates = [
         {
             "instrument": "USD_JPY",
@@ -249,7 +259,7 @@ def test_decision_summary_reports_blocked_candidate() -> None:
 
 
 def test_decision_summary_reports_submissions() -> None:
-    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2, allow_non_liquid_trades=False)
     submissions = [
         {"instrument": "GBP_USD", "result": {"submitted": True}},
         {"instrument": "NZD_JPY", "result": {"submitted": True}},
@@ -263,7 +273,7 @@ def test_decision_summary_reports_submissions() -> None:
 
 
 def test_decision_summary_reports_best_watched_candidate() -> None:
-    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2, allow_non_liquid_trades=False)
     candidates = [
         {
             "instrument": "USD_JPY",
@@ -290,6 +300,24 @@ def test_decision_summary_reports_best_watched_candidate() -> None:
     assert summary["short_score"] == 2.85
 
 
+def test_decision_summary_reports_non_liquid_block() -> None:
+    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2, allow_non_liquid_trades=False)
+    candidates = [
+        {
+            "instrument": "CHF_ZAR",
+            "action": "sell",
+            "score": 6.5,
+            "reason": "short_score_passed",
+            "metadata": {"short_score": 3.2},
+        }
+    ]
+
+    summary = build_decision_summary(candidates, [], args)
+
+    assert summary["reason"] == "non_liquid_trade_disabled"
+    assert summary["required_score"] == 6.2
+
+
 def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
     class FakeEngine:
         policy = SimpleNamespace(
@@ -312,6 +340,7 @@ def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
     args = SimpleNamespace(
         min_submit_score=5.4,
         non_liquid_min_submit_score=6.2,
+        allow_non_liquid_trades=False,
         max_units=100,
         max_open_trades=5,
         max_gross_position_units=500,

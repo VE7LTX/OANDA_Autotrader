@@ -142,6 +142,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
     parser.add_argument("--min-submit-score", type=float, default=5.4)
     parser.add_argument("--non-liquid-min-submit-score", type=float, default=6.2)
+    parser.add_argument("--allow-non-liquid-trades", action="store_true")
     parser.add_argument("--max-new-trades", type=int, default=5)
     parser.add_argument("--max-trades-per-hour", type=int, default=2)
     parser.add_argument("--instrument-cooldown-minutes", type=int, default=180)
@@ -644,6 +645,10 @@ def maybe_submit_candidates(
         candidate_action = str(candidate.get("action") or "").lower()
         candidate_score = float(candidate.get("score", 0.0) or 0.0)
         required_score = required_submit_score(str(candidate.get("instrument") or ""), args)
+        if candidate_action != "close" and non_liquid_trade_blocked(str(candidate.get("instrument") or ""), args):
+            candidate["required_score"] = required_score
+            candidate["blocked_reason"] = "non_liquid_trade_disabled"
+            continue
         if candidate_action != "close" and candidate_score < required_score:
             candidate["required_score"] = required_score
             candidate["blocked_reason"] = "below_submit_threshold"
@@ -739,6 +744,7 @@ def build_decision_summary(
             "instruments": [item.get("instrument") for item in submitted],
             "min_submit_score": args.min_submit_score,
             "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
+            "allow_non_liquid_trades": bool(getattr(args, "allow_non_liquid_trades", False)),
         }
 
     actionable = [
@@ -754,6 +760,7 @@ def build_decision_summary(
             "submitted_count": 0,
             "min_submit_score": args.min_submit_score,
             "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
+            "allow_non_liquid_trades": bool(getattr(args, "allow_non_liquid_trades", False)),
         }
         if top:
             summary.update(
@@ -774,7 +781,9 @@ def build_decision_summary(
     top_score = float(top.get("score", 0.0) or 0.0)
     required_score = required_submit_score(str(top.get("instrument") or ""), args)
     metadata = top.get("metadata") or {}
-    if top_score < required_score:
+    if non_liquid_trade_blocked(str(top.get("instrument") or ""), args):
+        reason = "non_liquid_trade_disabled"
+    elif top_score < required_score:
         reason = "below_submit_threshold"
     else:
         reason = str(top.get("blocked_reason") or "not_selected")
@@ -790,6 +799,7 @@ def build_decision_summary(
         "required_score": required_score,
         "min_submit_score": args.min_submit_score,
         "non_liquid_min_submit_score": getattr(args, "non_liquid_min_submit_score", None),
+        "allow_non_liquid_trades": bool(getattr(args, "allow_non_liquid_trades", False)),
         "long_score": metadata.get("long_score"),
         "short_score": metadata.get("short_score"),
         "regime_score": metadata.get("regime_score"),
@@ -809,6 +819,10 @@ def required_submit_score(instrument: str, args: argparse.Namespace) -> float:
         )
         or 0.0
     )
+
+
+def non_liquid_trade_blocked(instrument: str, args: argparse.Namespace) -> bool:
+    return not is_major_fx_pair(instrument) and not bool(getattr(args, "allow_non_liquid_trades", False))
 
 
 def entry_throttle_reason(

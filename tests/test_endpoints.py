@@ -28,11 +28,17 @@ def test_accounts_endpoints_build_paths() -> None:
     api.get_account("123")
     api.get_account_summary("456")
     api.get_instruments("789", instruments=["EUR_USD", "USD_CAD"])
+    api.get_pricing("789", ["EUR_USD", "USD_CAD"])
+    api.get_transaction_id_range("789", transaction_from=10, transaction_to=20)
     assert client.calls[0]["path"] == "/v3/accounts"
     assert client.calls[1]["path"] == "/v3/accounts/123"
     assert client.calls[2]["path"] == "/v3/accounts/456/summary"
     assert client.calls[3]["path"] == "/v3/accounts/789/instruments"
     assert client.calls[3]["params"] == {"instruments": "EUR_USD,USD_CAD"}
+    assert client.calls[4]["path"] == "/v3/accounts/789/pricing"
+    assert client.calls[4]["params"] == {"instruments": "EUR_USD,USD_CAD"}
+    assert client.calls[5]["path"] == "/v3/accounts/789/transactions/idrange"
+    assert client.calls[5]["params"] == {"from": "10", "to": "20"}
 
 
 def test_instruments_endpoint_builds_params() -> None:

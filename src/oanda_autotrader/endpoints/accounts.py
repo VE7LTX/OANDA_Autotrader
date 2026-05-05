@@ -100,3 +100,27 @@ class AccountsAPI:
         path = f"/v3/accounts/{account_id}/instruments"
         params = {"instruments": ",".join(instruments)} if instruments else None
         return self._client.request("GET", path, params=params)
+
+    def get_pricing(self, account_id: str, instruments: list[str]) -> dict[str, Any]:
+        """
+        GET /v3/accounts/{accountID}/pricing
+
+        Used before market order submission to validate executable bid/ask spread.
+        """
+
+        path = f"/v3/accounts/{account_id}/pricing"
+        return self._client.request("GET", path, params={"instruments": ",".join(instruments)})
+
+    def get_transaction_id_range(self, account_id: str, *, transaction_from: int, transaction_to: int) -> dict[str, Any]:
+        """
+        GET /v3/accounts/{accountID}/transactions/idrange
+
+        Used to seed instrument quality from recent broker-side fills.
+        """
+
+        path = f"/v3/accounts/{account_id}/transactions/idrange"
+        return self._client.request(
+            "GET",
+            path,
+            params={"from": str(transaction_from), "to": str(transaction_to)},
+        )

@@ -9,6 +9,7 @@ import scripts.scan_forex_opportunities as scanner
 from oanda_autotrader.execution import TradeAction
 
 from scripts.scan_forex_opportunities import (
+    apply_live_spread_guard,
     apply_adaptive_quality,
     build_decision_summary,
     build_trade_action,
@@ -24,6 +25,7 @@ from scripts.scan_forex_opportunities import (
     rank_directional_watchlist,
     required_submit_score,
     select_scan_instruments,
+    transaction_quality_from_transactions,
     update_instrument_quality,
 )
 
@@ -184,6 +186,74 @@ def test_update_instrument_quality_uses_slow_decay() -> None:
 
     assert quality["GBP_ZAR"]["closed_count"] > 7.9
     assert quality["GBP_ZAR"]["net_pl"] < -1.99
+
+
+def test_transaction_quality_seed_reads_broker_fills() -> None:
+    quality = transaction_quality_from_transactions(
+        [
+            {
+                "type": "ORDER_FILL",
+                "instrument": "GBP_ZAR",
+                "halfSpreadCost": "0.20",
+                "pl": "-0.45",
+                "tradesClosed": [{"tradeID": "1"}],
+            },
+            {
+                "type": "ORDER_CANCEL",
+                "instrument": "GBP_ZAR",
+            },
+        ]
+    )
+
+    assert quality["GBP_ZAR"]["fill_count"] == 1.0
+    assert quality["GBP_ZAR"]["closed_count"] == 1.0
+    assert quality["GBP_ZAR"]["net_pl"] == -0.45
+    assert quality["GBP_ZAR"]["half_spread_cost"] == 0.20
+
+
+def test_live_spread_guard_blocks_when_spread_over_atr() -> None:
+    args = SimpleNamespace(max_spread_atr_ratio=0.5, min_exit_spread_multiple=1.25)
+    action = TradeAction(
+        action="buy",
+        instrument="GBP_ZAR",
+        units=100,
+        confidence=0.6,
+        stop_loss_price="22.50000",
+        take_profit_price="22.56000",
+    )
+
+    result = apply_live_spread_guard(
+        {"instrument": "GBP_ZAR", "atr": 0.01, "stop_loss_price": "22.50000", "take_profit_price": "22.56000"},
+        action,
+        {"bid": 22.53000, "ask": 22.54000, "spread": 0.01},
+        args,
+    )
+
+    assert result["blocked_reason"] == "live_spread_too_wide"
+
+
+def test_live_spread_guard_widens_exits_away_from_bid_ask() -> None:
+    args = SimpleNamespace(max_spread_atr_ratio=2.0, min_exit_spread_multiple=1.25)
+    action = TradeAction(
+        action="buy",
+        instrument="EUR_USD",
+        units=100,
+        confidence=0.6,
+        stop_loss_price="1.09999",
+        take_profit_price="1.10003",
+    )
+
+    result = apply_live_spread_guard(
+        {"instrument": "EUR_USD", "atr": 0.001, "stop_loss_price": "1.09999", "take_profit_price": "1.10003"},
+        action,
+        {"bid": 1.10000, "ask": 1.10002, "spread": 0.00002},
+        args,
+    )
+
+    assert result["adjusted"] is True
+    adjusted = result["action"]
+    assert float(adjusted.take_profit_price) > 1.10002
+    assert float(adjusted.stop_loss_price) < 1.10000
 
 
 def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:

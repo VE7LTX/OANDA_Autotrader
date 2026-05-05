@@ -154,6 +154,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptive-max-avg-loss", type=float, default=0.08)
     parser.add_argument("--adaptive-max-avg-half-spread-cost", type=float, default=0.08)
     parser.add_argument("--adaptive-max-penalty", type=float, default=1.2)
+    parser.add_argument("--disable-transaction-quality-seed", action="store_true")
+    parser.add_argument("--transaction-quality-lookback", type=int, default=1000)
+    parser.add_argument("--disable-live-spread-guard", action="store_true")
+    parser.add_argument("--max-spread-atr-ratio", type=float, default=0.65)
+    parser.add_argument("--min-exit-spread-multiple", type=float, default=1.25)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
@@ -198,6 +203,10 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     price_precisions = instrument_price_precisions(tradeable)
     state = load_state_file(Path(args.state_path))
     instrument_quality = state.get("instrument_quality") or {}
+    seeded_quality = {}
+    if not bool(getattr(args, "disable_transaction_quality_seed", False)):
+        seeded_quality = fetch_transaction_quality_seed(account_client, app_config.account_id, summary, args)
+        instrument_quality = merge_instrument_quality(instrument_quality, seeded_quality)
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -341,6 +350,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "long_opportunities": rank_directional_watchlist(entry_candidates, "long_score"),
         "short_opportunities": rank_directional_watchlist(entry_candidates, "short_score"),
         "scan_errors": scan_errors,
+        "instrument_quality_seed": seeded_quality,
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -752,6 +762,9 @@ def maybe_submit_candidates(
     state = load_state_file(Path(args.state_path))
     recent_entries = list(state.get("recent_entries") or [])
     realized_pnl_day = float(state.get("realized_pnl_day", 0.0) or 0.0)
+    prices = {}
+    if not bool(getattr(args, "disable_live_spread_guard", False)):
+        prices = fetch_live_prices(app_config, [str(item.get("instrument") or "") for item in ordered_candidates])
     for candidate in ordered_candidates:
         candidate_action = str(candidate.get("action") or "").lower()
         candidate_score = float(candidate.get("score", 0.0) or 0.0)
@@ -787,6 +800,19 @@ def maybe_submit_candidates(
             if throttle_reason:
                 candidate["blocked_reason"] = throttle_reason
                 continue
+            price_guard = apply_live_spread_guard(candidate, action, prices.get(action.instrument), args)
+            if price_guard.get("blocked_reason"):
+                candidate["blocked_reason"] = price_guard["blocked_reason"]
+                candidate["spread"] = price_guard.get("spread")
+                candidate["spread_atr_ratio"] = price_guard.get("spread_atr_ratio")
+                continue
+            if price_guard.get("adjusted"):
+                action = price_guard["action"]
+                candidate["stop_loss_price"] = action.stop_loss_price
+                candidate["take_profit_price"] = action.take_profit_price
+                candidate["spread"] = price_guard.get("spread")
+                candidate["spread_atr_ratio"] = price_guard.get("spread_atr_ratio")
+                candidate["exit_adjustment"] = price_guard.get("adjustment")
             if not can_submit_entry(engine, projected_snapshot, action):
                 candidate["blocked_reason"] = "risk_policy"
                 continue
@@ -825,6 +851,136 @@ def maybe_submit_candidates(
                 }
             )
     return submissions
+
+
+def fetch_live_prices(app_config, instruments: list[str]) -> dict[str, dict[str, float]]:
+    unique = sorted({name for name in instruments if name})
+    if not unique:
+        return {}
+    try:
+        account_client = build_account_client(app_config)
+        payload = account_client.get_pricing(app_config.account_id, unique)
+    except Exception:
+        return {}
+    prices: dict[str, dict[str, float]] = {}
+    price_items = payload.get("prices", []) if isinstance(payload, dict) else []
+    for item in price_items:
+        if not isinstance(item, dict):
+            continue
+        instrument = str(item.get("instrument") or "")
+        bid = _price_bucket_value(item.get("closeoutBid")) or _best_price(item.get("bids"), prefer="max")
+        ask = _price_bucket_value(item.get("closeoutAsk")) or _best_price(item.get("asks"), prefer="min")
+        if not instrument or bid is None or ask is None or ask <= bid:
+            continue
+        prices[instrument] = {"bid": bid, "ask": ask, "spread": ask - bid}
+    return prices
+
+
+def apply_live_spread_guard(
+    candidate: dict[str, object],
+    action: TradeAction,
+    price: dict[str, float] | None,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    if action.action.lower() not in {"buy", "sell"} or not price:
+        return {"action": action, "adjusted": False}
+    spread = float(price.get("spread", 0.0) or 0.0)
+    atr_value = _safe_number(candidate.get("atr"))
+    spread_atr_ratio = spread / atr_value if atr_value and atr_value > 0 else None
+    max_ratio = float(getattr(args, "max_spread_atr_ratio", 0.0) or 0.0)
+    if spread_atr_ratio is not None and max_ratio > 0 and spread_atr_ratio > max_ratio:
+        return {
+            "action": action,
+            "adjusted": False,
+            "blocked_reason": "live_spread_too_wide",
+            "spread": spread,
+            "spread_atr_ratio": spread_atr_ratio,
+        }
+
+    min_multiple = float(getattr(args, "min_exit_spread_multiple", 1.0) or 1.0)
+    min_distance = max(spread * min_multiple, 0.0)
+    stop_loss = _safe_number(action.stop_loss_price)
+    take_profit = _safe_number(action.take_profit_price)
+    bid = float(price["bid"])
+    ask = float(price["ask"])
+    adjusted = False
+    adjustment: dict[str, float] = {}
+
+    if action.action.lower() == "buy":
+        min_take_profit = ask + min_distance
+        max_stop_loss = bid - min_distance
+        if take_profit is not None and take_profit <= min_take_profit:
+            take_profit = min_take_profit
+            adjusted = True
+            adjustment["take_profit_price"] = take_profit
+        if stop_loss is not None and stop_loss >= max_stop_loss:
+            stop_loss = max_stop_loss
+            adjusted = True
+            adjustment["stop_loss_price"] = stop_loss
+    else:
+        max_take_profit = bid - min_distance
+        min_stop_loss = ask + min_distance
+        if take_profit is not None and take_profit >= max_take_profit:
+            take_profit = max_take_profit
+            adjusted = True
+            adjustment["take_profit_price"] = take_profit
+        if stop_loss is not None and stop_loss <= min_stop_loss:
+            stop_loss = min_stop_loss
+            adjusted = True
+            adjustment["stop_loss_price"] = stop_loss
+
+    if not adjusted:
+        return {
+            "action": action,
+            "adjusted": False,
+            "spread": spread,
+            "spread_atr_ratio": spread_atr_ratio,
+        }
+
+    precision = _candidate_price_precision(candidate)
+    adjusted_action = TradeAction(
+        action=action.action,
+        instrument=action.instrument,
+        units=action.units,
+        confidence=action.confidence,
+        reason=action.reason,
+        stop_loss_price=format_price(stop_loss, precision) if stop_loss is not None else action.stop_loss_price,
+        take_profit_price=format_price(take_profit, precision) if take_profit is not None else action.take_profit_price,
+        metadata=action.metadata,
+    )
+    return {
+        "action": adjusted_action,
+        "adjusted": True,
+        "adjustment": adjustment,
+        "spread": spread,
+        "spread_atr_ratio": spread_atr_ratio,
+    }
+
+
+def _candidate_price_precision(candidate: dict[str, object]) -> int:
+    for value in (candidate.get("stop_loss_price"), candidate.get("take_profit_price")):
+        text = str(value or "")
+        if "." in text:
+            return len(text.rsplit(".", 1)[1])
+    return 5
+
+
+def format_price(value: float, precision: int) -> str:
+    return f"{value:.{max(0, int(precision))}f}"
+
+
+def _price_bucket_value(value: object) -> float | None:
+    return _safe_number(value)
+
+
+def _best_price(items: object, *, prefer: str) -> float | None:
+    if not isinstance(items, list):
+        return None
+    values = [_safe_number((item or {}).get("price")) for item in items if isinstance(item, dict)]
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    return max(values) if prefer == "max" else min(values)
 
 
 def can_submit_entry(engine: PracticeExecutionEngine, snapshot, action: TradeAction) -> bool:
@@ -1224,7 +1380,10 @@ def write_state_record(
         "submission": payload.get("submission"),
         "decision_summary": payload.get("decision_summary"),
         "instrument_quality": update_instrument_quality(
-            previous_state.get("instrument_quality") or {},
+            merge_instrument_quality(
+                previous_state.get("instrument_quality") or {},
+                payload.get("instrument_quality_seed") or {},
+            ),
             payload.get("submissions") or [],
         ),
     }
@@ -1276,6 +1435,75 @@ def update_instrument_quality(
     return {
         instrument: stats
         for instrument, stats in quality.items()
+        if stats.get("fill_count", 0.0) >= 0.05 or abs(stats.get("net_pl", 0.0)) >= 0.001
+    }
+
+
+def fetch_transaction_quality_seed(account_client, account_id: str, summary: dict[str, object], args: argparse.Namespace) -> dict[str, dict[str, float]]:
+    account = summary.get("account", {}) if isinstance(summary, dict) else {}
+    try:
+        last_id = int(account.get("lastTransactionID") or summary.get("lastTransactionID") or 0)
+    except (TypeError, ValueError):
+        return {}
+    lookback = max(0, int(getattr(args, "transaction_quality_lookback", 0) or 0))
+    if last_id <= 0 or lookback <= 0:
+        return {}
+    first_id = max(1, last_id - lookback + 1)
+    try:
+        payload = account_client.get_transaction_id_range(account_id, transaction_from=first_id, transaction_to=last_id)
+    except Exception:
+        return {}
+    return transaction_quality_from_transactions(payload.get("transactions", []) if isinstance(payload, dict) else [])
+
+
+def transaction_quality_from_transactions(transactions: list[object]) -> dict[str, dict[str, float]]:
+    quality: dict[str, dict[str, float]] = {}
+    for item in transactions:
+        if not isinstance(item, dict) or item.get("type") != "ORDER_FILL":
+            continue
+        instrument = str(item.get("instrument") or "")
+        if not instrument:
+            continue
+        stats = quality.setdefault(
+            instrument,
+            {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+        )
+        stats["fill_count"] += 1.0
+        stats["half_spread_cost"] += _safe_number(item.get("halfSpreadCost")) or 0.0
+        pl = _safe_number(item.get("pl")) or 0.0
+        closed = bool(item.get("tradesClosed") or item.get("tradeReduced") or item.get("tradesReduced"))
+        if pl or closed:
+            stats["closed_count"] += 1.0
+            stats["net_pl"] += pl
+    return quality
+
+
+def merge_instrument_quality(
+    previous: dict[str, object],
+    seeded: dict[str, dict[str, float]],
+) -> dict[str, dict[str, float]]:
+    merged: dict[str, dict[str, float]] = {}
+    for source in (previous, seeded):
+        if not isinstance(source, dict):
+            continue
+        for instrument, stats in source.items():
+            if not isinstance(stats, dict):
+                continue
+            target = merged.setdefault(
+                str(instrument),
+                {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+            )
+            fill_count = float(stats.get("fill_count", 0.0) or 0.0)
+            closed_count = float(stats.get("closed_count", 0.0) or 0.0)
+            if fill_count > target["fill_count"]:
+                target["fill_count"] = fill_count
+                target["half_spread_cost"] = float(stats.get("half_spread_cost", 0.0) or 0.0)
+            if closed_count > target["closed_count"]:
+                target["closed_count"] = closed_count
+                target["net_pl"] = float(stats.get("net_pl", 0.0) or 0.0)
+    return {
+        instrument: stats
+        for instrument, stats in merged.items()
         if stats.get("fill_count", 0.0) >= 0.05 or abs(stats.get("net_pl", 0.0)) >= 0.001
     }
 

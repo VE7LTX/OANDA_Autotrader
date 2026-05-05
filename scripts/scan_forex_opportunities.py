@@ -158,6 +158,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--transaction-quality-lookback", type=int, default=1000)
     parser.add_argument("--disable-live-spread-guard", action="store_true")
     parser.add_argument("--max-spread-atr-ratio", type=float, default=0.65)
+    parser.add_argument("--disable-adaptive-spread-guard", action="store_true")
+    parser.add_argument("--min-adaptive-spread-atr-ratio", type=float, default=0.35)
+    parser.add_argument("--max-adaptive-spread-atr-ratio", type=float, default=3.0)
     parser.add_argument("--min-exit-spread-multiple", type=float, default=1.25)
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
@@ -805,6 +808,8 @@ def maybe_submit_candidates(
                 candidate["blocked_reason"] = price_guard["blocked_reason"]
                 candidate["spread"] = price_guard.get("spread")
                 candidate["spread_atr_ratio"] = price_guard.get("spread_atr_ratio")
+                candidate["spread_atr_limit"] = price_guard.get("spread_atr_limit")
+                candidate["spread_guard_reasons"] = price_guard.get("spread_guard_reasons")
                 continue
             if price_guard.get("adjusted"):
                 action = price_guard["action"]
@@ -812,6 +817,8 @@ def maybe_submit_candidates(
                 candidate["take_profit_price"] = action.take_profit_price
                 candidate["spread"] = price_guard.get("spread")
                 candidate["spread_atr_ratio"] = price_guard.get("spread_atr_ratio")
+                candidate["spread_atr_limit"] = price_guard.get("spread_atr_limit")
+                candidate["spread_guard_reasons"] = price_guard.get("spread_guard_reasons")
                 candidate["exit_adjustment"] = price_guard.get("adjustment")
             if not can_submit_entry(engine, projected_snapshot, action):
                 candidate["blocked_reason"] = "risk_policy"
@@ -887,7 +894,7 @@ def apply_live_spread_guard(
     spread = float(price.get("spread", 0.0) or 0.0)
     atr_value = _safe_number(candidate.get("atr"))
     spread_atr_ratio = spread / atr_value if atr_value and atr_value > 0 else None
-    max_ratio = float(getattr(args, "max_spread_atr_ratio", 0.0) or 0.0)
+    max_ratio, guard_reasons = adaptive_spread_atr_limit(candidate, args)
     if spread_atr_ratio is not None and max_ratio > 0 and spread_atr_ratio > max_ratio:
         return {
             "action": action,
@@ -895,9 +902,11 @@ def apply_live_spread_guard(
             "blocked_reason": "live_spread_too_wide",
             "spread": spread,
             "spread_atr_ratio": spread_atr_ratio,
+            "spread_atr_limit": max_ratio,
+            "spread_guard_reasons": guard_reasons,
         }
 
-    min_multiple = float(getattr(args, "min_exit_spread_multiple", 1.0) or 1.0)
+    min_multiple = adaptive_exit_spread_multiple(args, spread_atr_ratio=spread_atr_ratio, spread_atr_limit=max_ratio)
     min_distance = max(spread * min_multiple, 0.0)
     stop_loss = _safe_number(action.stop_loss_price)
     take_profit = _safe_number(action.take_profit_price)
@@ -935,6 +944,8 @@ def apply_live_spread_guard(
             "adjusted": False,
             "spread": spread,
             "spread_atr_ratio": spread_atr_ratio,
+            "spread_atr_limit": max_ratio,
+            "spread_guard_reasons": guard_reasons,
         }
 
     precision = _candidate_price_precision(candidate)
@@ -954,7 +965,74 @@ def apply_live_spread_guard(
         "adjustment": adjustment,
         "spread": spread,
         "spread_atr_ratio": spread_atr_ratio,
+        "spread_atr_limit": max_ratio,
+        "spread_guard_reasons": guard_reasons,
     }
+
+
+def adaptive_spread_atr_limit(candidate: dict[str, object], args: argparse.Namespace) -> tuple[float, list[str]]:
+    base = float(getattr(args, "max_spread_atr_ratio", 0.0) or 0.0)
+    if base <= 0:
+        return base, ["disabled"]
+    if bool(getattr(args, "disable_adaptive_spread_guard", False)):
+        return base, ["fixed"]
+
+    instrument = str(candidate.get("instrument") or "")
+    score = float(candidate.get("score", 0.0) or 0.0)
+    required = required_submit_score(instrument, args)
+    score_gap = max(0.0, score - required)
+    quality_penalty = float(candidate.get("quality_penalty", 0.0) or 0.0)
+    quality_reasons = set(candidate.get("quality_reasons") or [])
+    atr_ratio = _safe_number(candidate.get("atr_ratio"))
+
+    limit = base
+    reasons: list[str] = []
+    if is_major_fx_pair(instrument):
+        limit *= 1.5
+        reasons.append("liquid_pair")
+    else:
+        limit *= 0.85
+        reasons.append("non_liquid_pair")
+
+    if score_gap > 0:
+        limit += min(1.0, score_gap * 0.5)
+        reasons.append("score_edge")
+
+    recovery_atr_ratio = float(getattr(args, "adaptive_recovery_atr_ratio", 0.0) or 0.0)
+    if atr_ratio is not None and recovery_atr_ratio > 0 and atr_ratio >= recovery_atr_ratio:
+        limit *= 1.2
+        reasons.append("atr_recovery")
+
+    if quality_penalty > 0:
+        limit *= max(0.35, 1.0 - min(0.75, quality_penalty * 0.6))
+        reasons.append("quality_penalty")
+    if "high_spread_cost" in quality_reasons:
+        limit *= 0.7
+        reasons.append("high_spread_cost")
+    if "negative_recent_pl" in quality_reasons:
+        limit *= 0.8
+        reasons.append("negative_recent_pl")
+
+    min_limit = float(getattr(args, "min_adaptive_spread_atr_ratio", 0.0) or 0.0)
+    max_limit = float(getattr(args, "max_adaptive_spread_atr_ratio", base) or base)
+    if max_limit > 0:
+        limit = min(limit, max_limit)
+    if min_limit > 0:
+        limit = max(limit, min_limit)
+    return limit, reasons
+
+
+def adaptive_exit_spread_multiple(
+    args: argparse.Namespace,
+    *,
+    spread_atr_ratio: float | None,
+    spread_atr_limit: float,
+) -> float:
+    base = float(getattr(args, "min_exit_spread_multiple", 1.0) or 1.0)
+    if spread_atr_ratio is None or spread_atr_limit <= 0:
+        return base
+    pressure = min(1.0, max(0.0, spread_atr_ratio / spread_atr_limit))
+    return base * (1.0 + pressure * 0.25)
 
 
 def _candidate_price_precision(candidate: dict[str, object]) -> int:

@@ -9,6 +9,7 @@ import scripts.scan_forex_opportunities as scanner
 from oanda_autotrader.execution import TradeAction
 
 from scripts.scan_forex_opportunities import (
+    adaptive_spread_atr_limit,
     apply_live_spread_guard,
     apply_adaptive_quality,
     build_decision_summary,
@@ -212,7 +213,11 @@ def test_transaction_quality_seed_reads_broker_fills() -> None:
 
 
 def test_live_spread_guard_blocks_when_spread_over_atr() -> None:
-    args = SimpleNamespace(max_spread_atr_ratio=0.5, min_exit_spread_multiple=1.25)
+    args = SimpleNamespace(
+        max_spread_atr_ratio=0.5,
+        min_exit_spread_multiple=1.25,
+        disable_adaptive_spread_guard=True,
+    )
     action = TradeAction(
         action="buy",
         instrument="GBP_ZAR",
@@ -233,7 +238,11 @@ def test_live_spread_guard_blocks_when_spread_over_atr() -> None:
 
 
 def test_live_spread_guard_widens_exits_away_from_bid_ask() -> None:
-    args = SimpleNamespace(max_spread_atr_ratio=2.0, min_exit_spread_multiple=1.25)
+    args = SimpleNamespace(
+        max_spread_atr_ratio=2.0,
+        min_exit_spread_multiple=1.25,
+        disable_adaptive_spread_guard=True,
+    )
     action = TradeAction(
         action="buy",
         instrument="EUR_USD",
@@ -254,6 +263,61 @@ def test_live_spread_guard_widens_exits_away_from_bid_ask() -> None:
     adjusted = result["action"]
     assert float(adjusted.take_profit_price) > 1.10002
     assert float(adjusted.stop_loss_price) < 1.10000
+
+
+def test_adaptive_spread_guard_looser_for_liquid_high_score() -> None:
+    args = SimpleNamespace(
+        max_spread_atr_ratio=0.65,
+        min_adaptive_spread_atr_ratio=0.35,
+        max_adaptive_spread_atr_ratio=3.0,
+        min_submit_score=5.1,
+        non_liquid_min_submit_score=5.5,
+        adaptive_recovery_atr_ratio=0.00035,
+        disable_adaptive_spread_guard=False,
+    )
+
+    limit, reasons = adaptive_spread_atr_limit(
+        {
+            "instrument": "USD_JPY",
+            "score": 5.6,
+            "quality_penalty": 0.0,
+            "quality_reasons": [],
+            "atr_ratio": 0.0004,
+        },
+        args,
+    )
+
+    assert limit > 1.0
+    assert "liquid_pair" in reasons
+    assert "score_edge" in reasons
+
+
+def test_adaptive_spread_guard_tighter_for_bad_non_liquid_quality() -> None:
+    args = SimpleNamespace(
+        max_spread_atr_ratio=0.65,
+        min_adaptive_spread_atr_ratio=0.35,
+        max_adaptive_spread_atr_ratio=3.0,
+        min_submit_score=5.1,
+        non_liquid_min_submit_score=5.5,
+        adaptive_recovery_atr_ratio=0.00035,
+        disable_adaptive_spread_guard=False,
+    )
+
+    limit, reasons = adaptive_spread_atr_limit(
+        {
+            "instrument": "GBP_ZAR",
+            "score": 5.55,
+            "quality_penalty": 0.6,
+            "quality_reasons": ["negative_recent_pl", "high_spread_cost"],
+            "atr_ratio": 0.0002,
+        },
+        args,
+    )
+
+    assert limit < 0.45
+    assert "non_liquid_pair" in reasons
+    assert "high_spread_cost" in reasons
+    assert "negative_recent_pl" in reasons
 
 
 def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:

@@ -1065,10 +1065,21 @@ def write_state_record(
     if nav is not None and balance is not None:
         unrealized_pnl = float(nav) - float(balance)
     recent_entries = prune_recent_entries(list(previous_state.get("recent_entries") or []))
+    last_submission = previous_state.get("last_submission")
     for submission in payload.get("submissions") or []:
         if not isinstance(submission, dict):
             continue
         result = submission.get("result") or {}
+        if result.get("submitted") or submission.get("error"):
+            last_submission = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "instrument": submission.get("instrument"),
+                "action": submission.get("action"),
+                "score": submission.get("score"),
+                "reason": submission.get("reason"),
+                "submitted": bool(result.get("submitted")),
+                "error": submission.get("error"),
+            }
         if not result.get("submitted"):
             continue
         action = str(submission.get("action") or "")
@@ -1101,6 +1112,7 @@ def write_state_record(
         "session_start_balance": session_start_balance,
         "session_start_nav": session_start_nav,
         "recent_entries": recent_entries,
+        "last_submission": last_submission,
         "open_trade_count": snapshot.open_trade_count,
         "positions_by_instrument": snapshot.positions_by_instrument,
         "active_positions": [

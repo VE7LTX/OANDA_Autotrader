@@ -4,10 +4,13 @@ import json
 
 from scripts.run_bot_monitor import (
     classify_status,
+    find_latest_submission_record,
     format_block,
     format_decision_summary,
+    format_last_trade_summary,
     format_snapshot_summary,
     read_json,
+    read_jsonl_tail,
     read_last_jsonl,
 )
 
@@ -16,6 +19,13 @@ def test_read_jsonl_last_line(tmp_path) -> None:
     path = tmp_path / "bot_audit.jsonl"
     path.write_text('{"a": 1}\n{"b": 2}\n', encoding="utf-8")
     assert read_last_jsonl(path) == {"b": 2}
+
+
+def test_read_jsonl_tail(tmp_path) -> None:
+    path = tmp_path / "bot_audit.jsonl"
+    path.write_text('{"a": 1}\nnot-json\n{"b": 2}\n{"c": 3}\n', encoding="utf-8")
+
+    assert read_jsonl_tail(path, limit=3) == [{"b": 2}, {"c": 3}]
 
 
 def test_read_json(tmp_path) -> None:
@@ -88,3 +98,48 @@ def test_format_decision_summary_is_human_readable() -> None:
     assert "Short: 2.850" in summary
     assert "Need: 6.200" in summary
     assert "Fib retrace: 0.500" in summary
+
+
+def test_format_last_trade_summary_shows_flat_after_trade() -> None:
+    summary = format_last_trade_summary(
+        {
+            "open_trade_count": 0,
+            "realized_pnl_day": -0.0427,
+            "last_submission": {
+                "timestamp": "2026-05-05T04:02:38Z",
+                "instrument": "AUD_JPY",
+                "action": "sell",
+                "score": 5.59,
+                "reason": "short_score_passed",
+                "submitted": True,
+            },
+        }
+    )
+
+    assert "AUD_JPY SELL" in summary
+    assert "Open now: 0" in summary
+    assert "Session PnL: -0.043" in summary
+
+
+def test_format_last_trade_summary_recovers_from_audit_tail() -> None:
+    audit_tail = [
+        {"timestamp": "old", "submission": None},
+        {
+            "timestamp": "2026-05-05T04:02:38Z",
+            "submission": {
+                "instrument": "AUD_JPY",
+                "action": "sell",
+                "score": 5.59,
+                "reason": "short_score_passed",
+                "result": {"submitted": True},
+            },
+        },
+        {"timestamp": "newer", "submission": None},
+    ]
+
+    latest = find_latest_submission_record(audit_tail)
+    summary = format_last_trade_summary({"open_trade_count": 0, "realized_pnl_day": -0.41}, audit_tail=audit_tail)
+
+    assert latest["instrument"] == "AUD_JPY"
+    assert "AUD_JPY SELL" in summary
+    assert "Session PnL: -0.410" in summary

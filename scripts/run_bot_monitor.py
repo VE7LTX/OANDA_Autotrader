@@ -37,6 +37,22 @@ def read_last_jsonl(path: Path) -> dict | None:
         return None
 
 
+def read_jsonl_tail(path: Path, *, limit: int = 50) -> list[dict]:
+    if not path.exists():
+        return []
+    try:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except Exception:
+        return []
+    rows: list[dict] = []
+    for line in lines[-limit:]:
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+    return rows
+
+
 def read_json(path: Path) -> dict | None:
     if not path.exists():
         return None
@@ -71,6 +87,7 @@ class MonitorApp(tk.Tk):
         self.action_var = tk.StringVar(value="No action yet")
         self.position_var = tk.StringVar(value="No snapshot yet")
         self.state_var = tk.StringVar(value="No runtime state yet")
+        self.last_trade_var = tk.StringVar(value="No submitted trades yet")
         self.decision_var = tk.StringVar(value="No decision summary yet")
         self.refresh_var = tk.StringVar(value="Auto-refresh every 2 seconds")
 
@@ -153,7 +170,8 @@ class MonitorApp(tk.Tk):
         self._card_grid(cards_frame, 0, 2, "Latest Action", self.action_var)
         self._card_grid(cards_frame, 1, 0, "Position State", self.position_var)
         self._card_grid(cards_frame, 1, 1, "Runtime State", self.state_var)
-        self._card_grid(cards_frame, 1, 2, "Decision Gate", self.decision_var)
+        self._card_grid(cards_frame, 1, 2, "Last Trade", self.last_trade_var)
+        self._card_grid(cards_frame, 2, 0, "Decision Gate", self.decision_var)
 
         watchlists_grid = tk.Frame(scroll_frame, bg="#0f172a")
         watchlists_grid.pack(fill="x", pady=6)
@@ -234,6 +252,7 @@ class MonitorApp(tk.Tk):
 
     def refresh(self) -> None:
         audit = read_last_jsonl(self.audit_path)
+        audit_tail = read_jsonl_tail(self.audit_path)
         state = read_json(self.state_path)
         scan = read_json(self.scan_path)
 
@@ -254,6 +273,7 @@ class MonitorApp(tk.Tk):
         self.action_var.set(format_action_summary(audit.get("action") or {}, audit.get("result") or {}))
         self.position_var.set(format_snapshot_summary(audit.get("snapshot") or {}))
         self.state_var.set(format_state_summary(state or {}))
+        self.last_trade_var.set(format_last_trade_summary(state or {}, audit, audit_tail))
         self.decision_var.set(format_decision_summary(decision))
         self._update_pills(audit, blocked, state or {}, decision)
         self._render_watchlist(scan or {})
@@ -444,6 +464,57 @@ def format_state_summary(state: dict) -> str:
             f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
         ]
     )
+
+
+def format_last_trade_summary(state: dict, audit: dict | None = None, audit_tail: list[dict] | None = None) -> str:
+    last = state.get("last_submission") or {}
+    latest_audit = find_latest_submission_record(audit_tail or [])
+    audit_submission = latest_audit or (audit or {}).get("submission") or {}
+    if audit_submission:
+        result = audit_submission.get("result") or {}
+        if result.get("submitted") or audit_submission.get("error"):
+            last = {
+                "timestamp": audit_submission.get("timestamp") or (audit or {}).get("timestamp"),
+                "instrument": audit_submission.get("instrument"),
+                "action": audit_submission.get("action"),
+                "score": audit_submission.get("score"),
+                "reason": audit_submission.get("reason"),
+                "submitted": bool(result.get("submitted")),
+                "error": audit_submission.get("error"),
+            }
+    if not last:
+        return "\n".join(
+            [
+                "Last submitted trade: none",
+                f"Open now: {_fmt(state.get('open_trade_count'), digits=0)}",
+                f"Session PnL: {_fmt(state.get('realized_pnl_day'))}",
+            ]
+        )
+    status = "submitted" if last.get("submitted") else "rejected"
+    if last.get("error"):
+        status = "error"
+    return "\n".join(
+        [
+            f"Last trade: {status}",
+            f"{last.get('instrument', 'n/a')} {str(last.get('action', 'n/a')).upper()} score {_fmt(last.get('score'))}",
+            f"Reason: {last.get('reason', 'n/a')}",
+            f"Time: {last.get('timestamp', 'n/a')}",
+            f"Open now: {_fmt(state.get('open_trade_count'), digits=0)}  Session PnL: {_fmt(state.get('realized_pnl_day'))}",
+        ]
+    )
+
+
+def find_latest_submission_record(audit_tail: list[dict]) -> dict:
+    for record in reversed(audit_tail):
+        submission = record.get("submission") or {}
+        if not isinstance(submission, dict):
+            continue
+        result = submission.get("result") or {}
+        if result.get("submitted") or submission.get("error"):
+            enriched = dict(submission)
+            enriched.setdefault("timestamp", record.get("timestamp"))
+            return enriched
+    return {}
 
 
 def format_decision_summary(decision: dict) -> str:

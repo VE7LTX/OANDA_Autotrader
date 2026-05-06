@@ -204,6 +204,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--autonomous", action="store_true", help="Keep scanning and acting on a loop.")
     parser.add_argument("--iterations", type=int, default=1, help="Number of autonomous cycles to run. Use 0 for infinite.")
     parser.add_argument("--interval-seconds", type=int, default=60, help="Sleep between autonomous cycles.")
+    parser.add_argument("--disable-spread-recheck", action="store_true")
+    parser.add_argument("--spread-recheck-seconds", type=int, default=8)
+    parser.add_argument("--spread-recheck-max-age-seconds", type=int, default=240)
     parser.add_argument("--manage-exits", action="store_true", help="Evaluate and manage open positions before new entries.")
     parser.add_argument("--audit-path", default="data/forex_autonomous_audit.jsonl")
     parser.add_argument("--state-path", default="data/forex_autonomous_state.json")
@@ -227,7 +230,28 @@ def main() -> None:
             break
         if args.iterations and cycle >= args.iterations:
             break
-        time.sleep(max(1, args.interval_seconds))
+        sleep_with_spread_rechecks(args, cycle=cycle)
+
+
+def sleep_with_spread_rechecks(args: argparse.Namespace, *, cycle: int) -> None:
+    deadline = time.monotonic() + max(1, int(getattr(args, "interval_seconds", 60) or 60))
+    recheck_seconds = max(1, int(getattr(args, "spread_recheck_seconds", 8) or 8))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(recheck_seconds, remaining))
+        if bool(getattr(args, "disable_spread_recheck", False)) or not bool(getattr(args, "submit", False)):
+            continue
+        try:
+            run_spread_recheck(args, cycle=cycle)
+        except Exception as exc:
+            write_cycle_error(
+                Path(args.audit_path),
+                Path(args.state_path),
+                cycle=cycle,
+                error="spread_recheck: " + describe_exception(exc),
+            )
 
 
 def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
@@ -981,6 +1005,106 @@ def maybe_submit_candidates(
     return submissions
 
 
+def run_spread_recheck(args: argparse.Namespace, *, cycle: int) -> list[dict[str, object]]:
+    output = Path(args.output)
+    if not output.exists():
+        return []
+    age = time.time() - output.stat().st_mtime
+    max_age = max(1, int(getattr(args, "spread_recheck_max_age_seconds", 240) or 240))
+    if age > max_age:
+        return []
+
+    try:
+        payload = json.loads(output.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    candidates = spread_recheck_candidates(payload, args)
+    if not candidates:
+        return []
+
+    groups = load_account_groups_or_default(args.accounts_path)
+    group, entry = select_account(groups, args.group, args.account)
+    app_config = resolve_account_credentials(group, entry)
+    account_client = build_account_client(app_config)
+    details = account_client.get_account(app_config.account_id)
+    summary = account_client.get_account_summary(app_config.account_id)
+    snapshot = snapshot_from_account_payload(app_config, details, summary)
+    held = {name for name, units in snapshot.positions_by_instrument.items() if units}
+    fresh_candidates = []
+    for candidate in candidates:
+        item = dict(candidate)
+        item["has_position"] = str(item.get("instrument") or "") in held
+        item["recheck"] = True
+        fresh_candidates.append(item)
+
+    submissions = maybe_submit_candidates(
+        app_config=app_config,
+        snapshot=snapshot,
+        candidates=fresh_candidates,
+        args=args,
+    )
+    submitted = [item for item in submissions if (item.get("result") or {}).get("submitted")]
+
+    recheck_payload = {
+        "account_id": app_config.account_id,
+        "group": app_config.group_name,
+        "environment": app_config.environment,
+        "granularity": payload.get("granularity", args.granularity),
+        "instrument_scope": payload.get("instrument_scope"),
+        "instrument_count": payload.get("instrument_count"),
+        "scan_count": len(fresh_candidates),
+        "held_positions": sorted(held),
+        "scan_errors": [],
+        "top_opportunities": fresh_candidates[: args.top],
+        "submission": submissions[0] if submissions else None,
+        "submissions": submissions,
+        "decision_summary": build_decision_summary(fresh_candidates, submissions, args),
+        "spread_recheck": True,
+        "spread_recheck_submitted_count": len(submitted),
+    }
+    write_audit_record(
+        Path(args.audit_path),
+        cycle=cycle,
+        app_config=app_config,
+        summary=summary,
+        payload=recheck_payload,
+        snapshot=snapshot,
+        candidates=fresh_candidates,
+    )
+    if not submissions:
+        return []
+    write_state_record(
+        Path(args.state_path),
+        cycle=cycle,
+        app_config=app_config,
+        summary=summary,
+        payload=recheck_payload,
+        snapshot=snapshot,
+        candidates=fresh_candidates,
+    )
+    return submissions
+
+
+def spread_recheck_candidates(payload: dict[str, object], args: argparse.Namespace) -> list[dict[str, object]]:
+    seen: set[str] = set()
+    selected: list[dict[str, object]] = []
+    raw_candidates = list(payload.get("top_opportunities") or []) + list(payload.get("latest_candidates") or [])
+    for candidate in raw_candidates:
+        if not isinstance(candidate, dict):
+            continue
+        instrument = str(candidate.get("instrument") or "")
+        action = str(candidate.get("action") or "").lower()
+        if not instrument or instrument in seen or action not in {"buy", "sell"}:
+            continue
+        if candidate.get("blocked_reason") != "live_spread_too_wide":
+            continue
+        if float(candidate.get("score", 0.0) or 0.0) < required_submit_score(instrument, args):
+            continue
+        seen.add(instrument)
+        selected.append(dict(candidate))
+    return selected[: max(1, int(getattr(args, "max_new_trades", 5) or 5))]
+
+
 def fetch_live_prices(app_config, instruments: list[str]) -> dict[str, dict[str, float]]:
     unique = sorted({name for name in instruments if name})
     if not unique:
@@ -1496,6 +1620,8 @@ def write_audit_record(
         "candidates": candidates[:10],
         "submission": submission or None,
         "decision_summary": payload.get("decision_summary"),
+        "spread_recheck": bool(payload.get("spread_recheck")),
+        "spread_recheck_submitted_count": payload.get("spread_recheck_submitted_count"),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(record) + "\n")

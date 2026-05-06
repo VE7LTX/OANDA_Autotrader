@@ -26,6 +26,7 @@ from scripts.scan_forex_opportunities import (
     rank_directional_watchlist,
     required_submit_score,
     select_scan_instruments,
+    spread_recheck_candidates,
     transaction_quality_from_transactions,
     update_instrument_quality,
 )
@@ -286,6 +287,28 @@ def test_live_spread_guard_widens_exits_away_from_bid_ask() -> None:
     adjusted = result["action"]
     assert float(adjusted.take_profit_price) > 1.10002
     assert float(adjusted.stop_loss_price) < 1.10000
+
+
+def test_spread_recheck_candidates_only_retries_spread_blocks() -> None:
+    args = SimpleNamespace(
+        min_submit_score=5.1,
+        non_liquid_min_submit_score=5.5,
+        metal_submit_score_add=0.35,
+        commodity_submit_score_add=0.45,
+        max_new_trades=5,
+    )
+    payload = {
+        "top_opportunities": [
+            {"instrument": "USD_JPY", "action": "buy", "score": 5.4, "blocked_reason": "live_spread_too_wide"},
+            {"instrument": "EUR_USD", "action": "buy", "score": 4.9, "blocked_reason": "live_spread_too_wide"},
+            {"instrument": "XAU_USD", "action": "buy", "score": 5.7, "blocked_reason": "below_submit_threshold"},
+            {"instrument": "WTICO_USD", "action": "sell", "score": 6.1, "blocked_reason": "live_spread_too_wide"},
+        ]
+    }
+
+    candidates = spread_recheck_candidates(payload, args)
+
+    assert [item["instrument"] for item in candidates] == ["USD_JPY", "WTICO_USD"]
 
 
 def test_adaptive_spread_guard_looser_for_liquid_high_score() -> None:

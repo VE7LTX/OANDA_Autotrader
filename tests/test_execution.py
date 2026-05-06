@@ -280,3 +280,28 @@ def test_engine_marks_filled_market_order_as_submitted(app_config: AppConfig) ->
     assert result["submitted"] is True
     assert result["status"] == "filled"
     assert result["cancel_reason"] is None
+
+
+def test_engine_preserves_fractional_units_for_small_contracts(app_config: AppConfig) -> None:
+    engine = PracticeExecutionEngine(
+        app_config,
+        RiskPolicy(allowed_instruments=("XAU_USD",), max_units_per_trade=1),
+    )
+    snapshot = AccountSnapshot(
+        environment="practice",
+        account_id=app_config.account_id,
+        nav=500.0,
+        balance=500.0,
+        open_trade_count=0,
+    )
+    action = TradeAction(
+        action="buy",
+        instrument="XAU_USD",
+        units=0.1,
+        confidence=0.7,
+        stop_loss_price="3400.000",
+    )
+
+    result = engine.execute(action, snapshot, dry_run=True)
+
+    assert result["order"]["units"] == "0.1"

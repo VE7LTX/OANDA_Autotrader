@@ -15,7 +15,7 @@ class StrategyConfig:
     instrument: str
     fast_window: int = 5
     slow_window: int = 20
-    units: int = 100
+    units: float = 100
     min_separation: float = 0.0001
     atr_period: int = 14
     atr_stop_multiple: float = 1.5
@@ -192,11 +192,11 @@ def score_regime(separation: float, latest_atr: float, price: float) -> float:
     return score
 
 
-def position_size_from_atr(*, nav: float, atr_value: float, risk_fraction: float, atr_stop_multiple: float, max_units: int) -> int:
+def position_size_from_atr(*, nav: float, atr_value: float, risk_fraction: float, atr_stop_multiple: float, max_units: float) -> float:
     risk_budget = max(nav, 0.0) * max(risk_fraction, 0.0)
     stop_distance = max(atr_value * atr_stop_multiple, 1e-6)
-    units = int(risk_budget / stop_distance)
-    return max(1, min(max_units, units))
+    units = risk_budget / stop_distance
+    return max(float(max_units), min(float(max_units), units))
 
 
 def retracement_ratio(candles: list[dict], *, lookback: int = 55) -> float | None:

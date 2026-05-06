@@ -15,7 +15,7 @@ from .config import AppConfig
 class TradeAction:
     action: str
     instrument: str
-    units: int = 0
+    units: float = 0.0
     confidence: float = 0.0
     reason: str = ""
     stop_loss_price: str | None = None
@@ -30,17 +30,17 @@ class AccountSnapshot:
     nav: float | None
     balance: float | None
     open_trade_count: int
-    positions_by_instrument: dict[str, int] = field(default_factory=dict)
+    positions_by_instrument: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class RiskPolicy:
     practice_only: bool = True
     allowed_instruments: tuple[str, ...] = ()
-    max_units_per_trade: int = 1000
+    max_units_per_trade: float = 1000
     max_open_trades: int = 3
-    max_gross_position_units: int = 300
-    max_currency_gross_units: int = 200
+    max_gross_position_units: float = 300
+    max_currency_gross_units: float = 200
     max_currency_positions: int = 2
     min_confidence: float = 0.55
     require_stop_loss: bool = True
@@ -50,11 +50,11 @@ class RiskPolicy:
     def allows_instrument(self, instrument: str) -> bool:
         return not self.allowed_instruments or instrument in self.allowed_instruments
 
-    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> float:
         projected = self.project_snapshot(snapshot, action)
-        return sum(abs(int(units)) for units in projected.positions_by_instrument.values() if units)
+        return sum(abs(float(units)) for units in projected.positions_by_instrument.values() if units)
 
-    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> float:
         projected = self.project_snapshot(snapshot, action)
         currency_units = self._currency_gross_from_positions(projected.positions_by_instrument)
         return sum(currency_units.values())
@@ -65,8 +65,8 @@ class RiskPolicy:
         return max(currency_counts.values(), default=0)
 
     @staticmethod
-    def _currency_gross_from_positions(positions: dict[str, int]) -> dict[str, int]:
-        exposure: dict[str, int] = {}
+    def _currency_gross_from_positions(positions: dict[str, float]) -> dict[str, float]:
+        exposure: dict[str, float] = {}
         for instrument, units in positions.items():
             if not units:
                 continue
@@ -74,13 +74,13 @@ class RiskPolicy:
             if currencies is None:
                 continue
             base, quote = currencies
-            magnitude = abs(int(units))
+            magnitude = abs(float(units))
             exposure[base] = exposure.get(base, 0) + magnitude
             exposure[quote] = exposure.get(quote, 0) + magnitude
         return exposure
 
     @staticmethod
-    def _currency_position_counts(positions: dict[str, int]) -> dict[str, int]:
+    def _currency_position_counts(positions: dict[str, float]) -> dict[str, int]:
         counts: dict[str, int] = {}
         for instrument, units in positions.items():
             if not units:
@@ -98,7 +98,7 @@ class RiskPolicy:
         positions = dict(snapshot.positions_by_instrument)
         open_trade_count = int(snapshot.open_trade_count)
         if kind == "close":
-            current_units = int(positions.get(action.instrument, 0) or 0)
+            current_units = float(positions.get(action.instrument, 0) or 0)
             if current_units != 0:
                 positions[action.instrument] = 0
                 open_trade_count = max(0, open_trade_count - 1)
@@ -111,7 +111,7 @@ class RiskPolicy:
                 positions_by_instrument=positions,
             )
         if kind in {"buy", "sell"}:
-            current_units = int(positions.get(action.instrument, 0) or 0)
+            current_units = float(positions.get(action.instrument, 0) or 0)
             if current_units == 0:
                 open_trade_count += 1
                 positions[action.instrument] = action.units if kind == "buy" else -action.units
@@ -225,7 +225,7 @@ class PracticeExecutionEngine:
         order: dict[str, Any] = {
             "type": "MARKET",
             "instrument": action.instrument,
-            "units": str(signed_units),
+            "units": _format_units(signed_units),
             "timeInForce": self.policy.time_in_force,
             "positionFill": self.policy.position_fill,
         }
@@ -238,10 +238,10 @@ class PracticeExecutionEngine:
     def project_snapshot(self, snapshot: AccountSnapshot, action: TradeAction) -> AccountSnapshot:
         return self.policy.project_snapshot(snapshot, action)
 
-    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+    def projected_gross_position_units(self, snapshot: AccountSnapshot, action: TradeAction) -> float:
         return self.policy.projected_gross_position_units(snapshot, action)
 
-    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> int:
+    def projected_currency_gross_units(self, snapshot: AccountSnapshot, action: TradeAction) -> float:
         return self.policy.projected_currency_gross_units(snapshot, action)
 
 
@@ -252,13 +252,13 @@ def snapshot_from_account_payload(
 ) -> AccountSnapshot:
     account = account_payload.get("account", {})
     summary = summary_payload.get("account", {}) if summary_payload else {}
-    positions: dict[str, int] = {}
+    positions: dict[str, float] = {}
     for item in account.get("positions", []):
         instrument = item.get("instrument")
         if not instrument:
             continue
-        long_units = int(float(item.get("long", {}).get("units", "0")))
-        short_units = int(float(item.get("short", {}).get("units", "0")))
+        long_units = float(item.get("long", {}).get("units", "0") or 0)
+        short_units = float(item.get("short", {}).get("units", "0") or 0)
         positions[instrument] = long_units + short_units
     return AccountSnapshot(
         environment=config.environment,
@@ -277,6 +277,13 @@ def _safe_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _format_units(value: float) -> str:
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.10f}".rstrip("0").rstrip(".")
 
 
 def _instrument_currencies(instrument: str) -> tuple[str, str] | None:

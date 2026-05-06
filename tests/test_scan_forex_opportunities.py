@@ -67,6 +67,28 @@ def test_select_scan_instruments_defaults_to_all_tradeable_fx() -> None:
 
     assert select_scan_instruments(tradeable, majors_only=False) == ["EUR_NOK", "EUR_USD", "GBP_USD"]
     assert select_scan_instruments(tradeable, majors_only=True) == ["EUR_USD", "GBP_USD"]
+    assert select_scan_instruments(tradeable, majors_only=False, include_metals=True) == [
+        "EUR_NOK",
+        "EUR_USD",
+        "GBP_USD",
+        "XAU_USD",
+    ]
+
+
+def test_select_scan_instruments_can_include_commodities() -> None:
+    tradeable = [
+        {"name": "WTICO_USD", "type": "CFD"},
+        {"name": "SPX500_USD", "type": "CFD"},
+        {"name": "XAU_USD", "type": "METAL"},
+        {"name": "EUR_USD", "type": "CURRENCY"},
+    ]
+
+    assert select_scan_instruments(
+        tradeable,
+        majors_only=False,
+        include_metals=True,
+        include_commodities=True,
+    ) == ["EUR_USD", "WTICO_USD", "XAU_USD"]
 
 
 def test_instrument_price_precisions_use_oanda_metadata() -> None:
@@ -81,6 +103,7 @@ def test_instrument_price_precisions_use_oanda_metadata() -> None:
         "EUR_USD": 5,
         "GBP_JPY": 3,
         "HKD_JPY": 5,
+        "XAU_USD": 3,
     }
 
 
@@ -321,10 +344,17 @@ def test_adaptive_spread_guard_tighter_for_bad_non_liquid_quality() -> None:
 
 
 def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:
-    args = SimpleNamespace(min_submit_score=5.4, non_liquid_min_submit_score=6.2)
+    args = SimpleNamespace(
+        min_submit_score=5.4,
+        non_liquid_min_submit_score=6.2,
+        metal_submit_score_add=0.35,
+        commodity_submit_score_add=0.45,
+    )
 
     assert required_submit_score("EUR_USD", args) == 5.4
     assert required_submit_score("CHF_ZAR", args) == 6.2
+    assert required_submit_score("XAU_USD", args) == 6.55
+    assert required_submit_score("WTICO_USD", args) == 6.65
 
 
 def test_non_liquid_trade_gate_blocks_exotics_by_default() -> None:

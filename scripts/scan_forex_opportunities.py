@@ -105,6 +105,39 @@ LIQUID_FX_PAIRS = {
     "USD_JPY",
 }
 
+METAL_PREFIXES = ("XAU_", "XAG_", "XPT_", "XPD_")
+COMMODITY_NAMES = {
+    "BCO_USD",
+    "CORN_USD",
+    "NATGAS_USD",
+    "SOYBN_USD",
+    "SUGAR_USD",
+    "WHEAT_USD",
+    "WTICO_USD",
+    "XCU_USD",
+}
+
+INSTRUMENT_CLASS_RULES = {
+    "fx": {
+        "min_submit_score_add": 0.0,
+        "spread_limit_multiplier": 1.0,
+        "max_units": None,
+        "prefer_minimum_units": False,
+    },
+    "metal": {
+        "min_submit_score_add": 0.35,
+        "spread_limit_multiplier": 0.8,
+        "max_units": 1.0,
+        "prefer_minimum_units": True,
+    },
+    "commodity": {
+        "min_submit_score_add": 0.45,
+        "spread_limit_multiplier": 0.7,
+        "max_units": 1.0,
+        "prefer_minimum_units": True,
+    },
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Scan tradeable FX pairs and rank opportunities.")
@@ -139,6 +172,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="data/forex_opportunity_scan.json")
     parser.add_argument("--include-held", action="store_true")
     parser.add_argument("--majors-only", action="store_true", help="Limit scanning to the most liquid major FX pairs.")
+    parser.add_argument("--include-metals", action="store_true", help="Include tradeable metals with small-account sizing.")
+    parser.add_argument("--include-commodities", action="store_true", help="Include selected commodity CFDs with small-account sizing.")
+    parser.add_argument("--metal-units", type=float, default=0.1)
+    parser.add_argument("--commodity-units", type=float, default=1.0)
+    parser.add_argument("--metal-submit-score-add", type=float, default=0.35)
+    parser.add_argument("--commodity-submit-score-add", type=float, default=0.45)
     parser.add_argument("--submit", action="store_true", help="Submit the best ranked trade if it clears the score threshold.")
     parser.add_argument("--min-submit-score", type=float, default=5.4)
     parser.add_argument("--non-liquid-min-submit-score", type=float, default=6.2)
@@ -202,7 +241,13 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     summary = account_client.get_account_summary(app_config.account_id)
     snapshot = snapshot_from_account_payload(app_config, details, summary)
     tradeable = account_client.get_instruments(app_config.account_id).get("instruments", [])
-    instruments = select_scan_instruments(tradeable, majors_only=args.majors_only)
+    instrument_meta = instrument_metadata(tradeable)
+    instruments = select_scan_instruments(
+        tradeable,
+        majors_only=args.majors_only,
+        include_metals=args.include_metals,
+        include_commodities=args.include_commodities,
+    )
     price_precisions = instrument_price_precisions(tradeable)
     state = load_state_file(Path(args.state_path))
     instrument_quality = state.get("instrument_quality") or {}
@@ -265,7 +310,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             instrument=instrument,
             fast_window=strategy.fast_window,
             slow_window=strategy.slow_window,
-            units=strategy.units,
+            units=instrument_trade_units(instrument, instrument_meta.get(instrument, {}), args),
             min_separation=strategy.min_separation,
             atr_period=strategy.atr_period,
             atr_stop_multiple=strategy.atr_stop_multiple,
@@ -311,6 +356,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 "raw_score": quality.get("raw_score", score),
                 "confidence": action.confidence,
                 "units": action.units,
+                "instrument_class": instrument_class(instrument, instrument_meta.get(instrument)),
                 "stop_loss_price": action.stop_loss_price,
                 "take_profit_price": action.take_profit_price,
                 "metadata": metadata,
@@ -344,8 +390,9 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "group": app_config.group_name,
         "environment": app_config.environment,
         "granularity": args.granularity,
-        "instrument_scope": "liquid_fx" if args.majors_only else "all_fx",
+        "instrument_scope": instrument_scope_label(args),
         "instrument_count": len(instruments),
+        "instrument_classes": instrument_class_counts(instruments, instrument_meta),
         "scan_count": len(candidates),
         "held_positions": sorted(held),
         "exit_opportunities": managed_actions,
@@ -516,15 +563,89 @@ def is_major_fx_pair(name: str) -> bool:
     return name in LIQUID_FX_PAIRS
 
 
-def select_scan_instruments(tradeable: list[dict[str, object]], *, majors_only: bool) -> list[str]:
-    instruments = {
-        str(item.get("name"))
-        for item in tradeable
-        if isinstance(item, dict) and is_fx_pair(str(item.get("name") or ""))
-    }
+def is_metal_instrument(name: str, metadata: dict[str, object] | None = None) -> bool:
+    item_type = str((metadata or {}).get("type") or "").upper()
+    return item_type == "METAL" or str(name or "").startswith(METAL_PREFIXES)
+
+
+def is_commodity_instrument(name: str, metadata: dict[str, object] | None = None) -> bool:
+    item_type = str((metadata or {}).get("type") or "").upper()
+    return str(name or "") in COMMODITY_NAMES and (not item_type or item_type == "CFD")
+
+
+def instrument_class(name: str, metadata: dict[str, object] | None = None) -> str:
+    if is_fx_pair(name):
+        return "fx"
+    if is_metal_instrument(name, metadata):
+        return "metal"
+    if is_commodity_instrument(name, metadata):
+        return "commodity"
+    return "unknown"
+
+
+def select_scan_instruments(
+    tradeable: list[dict[str, object]],
+    *,
+    majors_only: bool,
+    include_metals: bool = False,
+    include_commodities: bool = False,
+) -> list[str]:
+    instruments: set[str] = set()
+    for item in tradeable:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        if is_fx_pair(name):
+            instruments.add(name)
+        elif include_metals and is_metal_instrument(name, item):
+            instruments.add(name)
+        elif include_commodities and is_commodity_instrument(name, item):
+            instruments.add(name)
     if majors_only:
         instruments = {name for name in instruments if is_major_fx_pair(name)}
     return sorted(instruments)
+
+
+def instrument_scope_label(args: argparse.Namespace) -> str:
+    parts = ["liquid_fx" if args.majors_only else "all_fx"]
+    if bool(getattr(args, "include_metals", False)):
+        parts.append("metals")
+    if bool(getattr(args, "include_commodities", False)):
+        parts.append("commodities")
+    return "+".join(parts)
+
+
+def instrument_metadata(tradeable: list[dict[str, object]]) -> dict[str, dict[str, object]]:
+    return {
+        str(item.get("name")): item
+        for item in tradeable
+        if isinstance(item, dict) and item.get("name")
+    }
+
+
+def instrument_class_counts(instruments: list[str], metadata: dict[str, dict[str, object]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for name in instruments:
+        cls = instrument_class(name, metadata.get(name))
+        counts[cls] = counts.get(cls, 0) + 1
+    return counts
+
+
+def instrument_trade_units(instrument: str, metadata: dict[str, object], args: argparse.Namespace) -> float:
+    cls = instrument_class(instrument, metadata)
+    if cls == "metal":
+        requested = float(getattr(args, "metal_units", 0.1) or 0.1)
+    elif cls == "commodity":
+        requested = float(getattr(args, "commodity_units", 1.0) or 1.0)
+    else:
+        requested = float(getattr(args, "max_units", 100) or 100)
+    minimum = _safe_number(metadata.get("minimumTradeSize")) or 0.0
+    maximum = _safe_number(metadata.get("maximumOrderUnits"))
+    units = max(requested, minimum) if minimum > 0 else requested
+    if maximum and maximum > 0:
+        units = min(units, maximum)
+    precision = int(metadata.get("tradeUnitsPrecision", 0) or 0)
+    return round(units, max(0, precision))
 
 
 def instrument_price_precisions(tradeable: list[dict[str, object]]) -> dict[str, int]:
@@ -533,7 +654,7 @@ def instrument_price_precisions(tradeable: list[dict[str, object]]) -> dict[str,
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "")
-        if not is_fx_pair(name):
+        if instrument_class(name, item) == "unknown":
             continue
         try:
             precisions[name] = int(item.get("displayPrecision"))
@@ -635,7 +756,7 @@ def build_managed_exit_candidates(
 
 def evaluate_managed_exit(
     instrument: str,
-    units: int,
+    units: float,
     candles: list[dict],
     snapshot,
     strategy: StrategyConfig,
@@ -649,7 +770,7 @@ def evaluate_managed_exit(
     if latest_atr is None:
         return None
     metadata = action.metadata or {}
-    current_units = int(metadata.get("current_units", units) or units)
+    current_units = float(metadata.get("current_units", units) or units)
     if current_units == 0:
         return None
     action_name = str(action.action).lower()
@@ -784,7 +905,7 @@ def maybe_submit_candidates(
         if action.action == "hold":
             continue
         if action.action == "close":
-            current_units = int(projected_snapshot.positions_by_instrument.get(action.instrument, 0) or 0)
+            current_units = float(projected_snapshot.positions_by_instrument.get(action.instrument, 0) or 0)
             if current_units == 0:
                 continue
         else:
@@ -990,6 +1111,12 @@ def adaptive_spread_atr_limit(candidate: dict[str, object], args: argparse.Names
     if is_major_fx_pair(instrument):
         limit *= 1.5
         reasons.append("liquid_pair")
+    elif instrument_class(instrument) == "metal":
+        limit *= 0.8
+        reasons.append("metal")
+    elif instrument_class(instrument) == "commodity":
+        limit *= 0.7
+        reasons.append("commodity")
     else:
         limit *= 0.85
         reasons.append("non_liquid_pair")
@@ -1157,19 +1284,29 @@ def build_decision_summary(
 
 
 def required_submit_score(instrument: str, args: argparse.Namespace) -> float:
+    cls = instrument_class(instrument)
     if is_major_fx_pair(instrument):
-        return float(getattr(args, "min_submit_score", 0.0) or 0.0)
-    return float(
-        getattr(
-            args,
-            "non_liquid_min_submit_score",
-            getattr(args, "min_submit_score", 0.0),
+        base = float(getattr(args, "min_submit_score", 0.0) or 0.0)
+    else:
+        base = float(
+            getattr(
+                args,
+                "non_liquid_min_submit_score",
+                getattr(args, "min_submit_score", 0.0),
+            )
+            or 0.0
         )
-        or 0.0
-    )
+    if cls == "metal":
+        base += float(getattr(args, "metal_submit_score_add", 0.35) or 0.0)
+    elif cls == "commodity":
+        base += float(getattr(args, "commodity_submit_score_add", 0.45) or 0.0)
+    return base
 
 
 def non_liquid_trade_blocked(instrument: str, args: argparse.Namespace) -> bool:
+    cls = instrument_class(instrument)
+    if cls in {"metal", "commodity"}:
+        return False
     return not is_major_fx_pair(instrument) and not bool(getattr(args, "allow_non_liquid_trades", False))
 
 
@@ -1249,7 +1386,7 @@ def build_trade_action(candidate: dict[str, object]):
         return TradeAction(
             action="close",
             instrument=str(candidate["instrument"]),
-            units=int(candidate.get("units") or 0),
+            units=float(candidate.get("units") or 0),
             confidence=float(candidate.get("confidence", 0.0) or 0.0),
             reason=str(candidate.get("reason") or "managed_exit"),
             metadata=dict(candidate.get("metadata") or {}),
@@ -1259,7 +1396,7 @@ def build_trade_action(candidate: dict[str, object]):
     return TradeAction(
         action=action,
         instrument=str(candidate["instrument"]),
-        units=int(candidate.get("units") or 0),
+        units=float(candidate.get("units") or 0),
         confidence=float(candidate.get("confidence", 0.0) or 0.0),
         reason=str(candidate.get("reason") or "scanner_pick"),
         stop_loss_price=str(candidate.get("stop_loss_price")) if candidate.get("stop_loss_price") else None,

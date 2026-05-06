@@ -8,6 +8,7 @@ from scripts.run_bot_monitor import (
     format_block,
     format_decision_summary,
     format_last_trade_summary,
+    format_performance_line,
     format_snapshot_summary,
     read_json,
     read_jsonl_tail,
@@ -105,6 +106,7 @@ def test_format_last_trade_summary_shows_flat_after_trade() -> None:
         {
             "open_trade_count": 0,
             "realized_pnl_day": -0.0427,
+            "performance_summary": {"overall": {"closed_count": 3, "win_count": 2, "loss_count": 1, "win_rate": 2 / 3}},
             "last_submission": {
                 "timestamp": "2026-05-05T04:02:38Z",
                 "instrument": "AUD_JPY",
@@ -119,6 +121,7 @@ def test_format_last_trade_summary_shows_flat_after_trade() -> None:
     assert "AUD_JPY SELL" in summary
     assert "Open now: 0" in summary
     assert "Session PnL: -0.043" in summary
+    assert "2W/1L" in summary
 
 
 def test_format_last_trade_summary_recovers_from_audit_tail() -> None:
@@ -143,3 +146,21 @@ def test_format_last_trade_summary_recovers_from_audit_tail() -> None:
     assert latest["instrument"] == "AUD_JPY"
     assert "AUD_JPY SELL" in summary
     assert "Session PnL: -0.410" in summary
+
+
+def test_format_performance_line_is_compact() -> None:
+    summary = format_performance_line(
+        {
+            "overall": {
+                "closed_count": 5,
+                "win_count": 3,
+                "loss_count": 2,
+                "win_rate": 0.6,
+                "profit_factor": 1.8,
+            }
+        }
+    )
+
+    assert "3W/2L" in summary
+    assert "win 60.0%" in summary
+    assert "PF 1.80" in summary

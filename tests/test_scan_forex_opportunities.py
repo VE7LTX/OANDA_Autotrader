@@ -27,6 +27,7 @@ from scripts.scan_forex_opportunities import (
     required_submit_score,
     select_scan_instruments,
     spread_recheck_candidates,
+    summarize_trade_performance,
     transaction_quality_from_transactions,
     update_instrument_quality,
 )
@@ -205,12 +206,24 @@ def test_update_instrument_quality_ignores_canceled_orders() -> None:
 
 def test_update_instrument_quality_uses_slow_decay() -> None:
     quality = update_instrument_quality(
-        {"GBP_ZAR": {"fill_count": 10, "closed_count": 8, "net_pl": -2.0, "half_spread_cost": 0.8}},
+        {
+            "GBP_ZAR": {
+                "fill_count": 10,
+                "closed_count": 8,
+                "win_count": 3,
+                "loss_count": 5,
+                "net_pl": -2.0,
+                "gross_win_pl": 1.0,
+                "gross_loss_pl": -3.0,
+                "half_spread_cost": 0.8,
+            }
+        },
         [],
     )
 
     assert quality["GBP_ZAR"]["closed_count"] > 7.9
     assert quality["GBP_ZAR"]["net_pl"] < -1.99
+    assert quality["GBP_ZAR"]["win_rate"] == quality["GBP_ZAR"]["win_count"] / quality["GBP_ZAR"]["classified_closed_count"]
 
 
 def test_transaction_quality_seed_reads_broker_fills() -> None:
@@ -232,8 +245,43 @@ def test_transaction_quality_seed_reads_broker_fills() -> None:
 
     assert quality["GBP_ZAR"]["fill_count"] == 1.0
     assert quality["GBP_ZAR"]["closed_count"] == 1.0
+    assert quality["GBP_ZAR"]["win_count"] == 0.0
+    assert quality["GBP_ZAR"]["loss_count"] == 1.0
+    assert quality["GBP_ZAR"]["win_rate"] == 0.0
     assert quality["GBP_ZAR"]["net_pl"] == -0.45
     assert quality["GBP_ZAR"]["half_spread_cost"] == 0.20
+
+
+def test_trade_performance_summary_tracks_win_loss_ratio() -> None:
+    quality = transaction_quality_from_transactions(
+        [
+            {
+                "type": "ORDER_FILL",
+                "instrument": "EUR_USD",
+                "pl": "0.30",
+                "tradesClosed": [{"tradeID": "1"}],
+            },
+            {
+                "type": "ORDER_FILL",
+                "instrument": "EUR_USD",
+                "pl": "-0.10",
+                "tradesClosed": [{"tradeID": "2"}],
+            },
+            {
+                "type": "ORDER_FILL",
+                "instrument": "GBP_USD",
+                "pl": "0.20",
+                "tradesClosed": [{"tradeID": "3"}],
+            },
+        ]
+    )
+
+    summary = summarize_trade_performance(quality)
+
+    assert summary["overall"]["win_count"] == 2.0
+    assert summary["overall"]["loss_count"] == 1.0
+    assert summary["overall"]["win_rate"] == 2 / 3
+    assert summary["overall"]["profit_factor"] == 5.0
 
 
 def test_live_spread_guard_blocks_when_spread_over_atr() -> None:

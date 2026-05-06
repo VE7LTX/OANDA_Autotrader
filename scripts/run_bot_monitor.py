@@ -452,6 +452,7 @@ def format_state_summary(state: dict) -> str:
                 f"Active positions: {active_text}",
                 f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
                 f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
+                f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
             ]
         )
     return "\n".join(
@@ -462,6 +463,7 @@ def format_state_summary(state: dict) -> str:
             f"Active positions: {active_text}",
             f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
             f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
+            f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
         ]
     )
 
@@ -488,6 +490,7 @@ def format_last_trade_summary(state: dict, audit: dict | None = None, audit_tail
                 "Last submitted trade: none",
                 f"Open now: {_fmt(state.get('open_trade_count'), digits=0)}",
                 f"Session PnL: {_fmt(state.get('realized_pnl_day'))}",
+                f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
             ]
         )
     status = "submitted" if last.get("submitted") else "rejected"
@@ -500,7 +503,25 @@ def format_last_trade_summary(state: dict, audit: dict | None = None, audit_tail
             f"Reason: {last.get('reason', 'n/a')}",
             f"Time: {last.get('timestamp', 'n/a')}",
             f"Open now: {_fmt(state.get('open_trade_count'), digits=0)}  Session PnL: {_fmt(state.get('realized_pnl_day'))}",
+            f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
         ]
+    )
+
+
+def format_performance_line(performance: dict) -> str:
+    overall = performance.get("overall") if isinstance(performance, dict) else {}
+    if not isinstance(overall, dict) or not overall:
+        return "n/a"
+    closed = overall.get("closed_count", 0.0)
+    wins = overall.get("win_count", 0.0)
+    losses = overall.get("loss_count", 0.0)
+    unknown = overall.get("unclassified_closed_count", 0.0)
+    win_rate = float(overall.get("win_rate", 0.0) or 0.0) * 100
+    profit_factor = overall.get("profit_factor", 0.0)
+    return (
+        f"{_fmt(wins, digits=0)}W/{_fmt(losses, digits=0)}L "
+        f"closed {_fmt(closed, digits=0)} | win {_fmt(win_rate, digits=1)}% | "
+        f"unknown {_fmt(unknown, digits=0)} | PF {_fmt(profit_factor, digits=2)}"
     )
 
 

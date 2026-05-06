@@ -1720,13 +1720,14 @@ def write_state_record(
         },
         "submission": payload.get("submission"),
         "decision_summary": payload.get("decision_summary"),
-        "instrument_quality": update_instrument_quality(
+        "instrument_quality": (instrument_quality := update_instrument_quality(
             merge_instrument_quality(
                 previous_state.get("instrument_quality") or {},
                 payload.get("instrument_quality_seed") or {},
             ),
             payload.get("submissions") or [],
-        ),
+        )),
+        "performance_summary": summarize_trade_performance(instrument_quality),
     }
     path.write_text(json.dumps(record, indent=2), encoding="utf-8")
 
@@ -1745,7 +1746,12 @@ def update_instrument_quality(
             quality[str(instrument)] = {
                 "fill_count": float(stats.get("fill_count", 0.0) or 0.0) * decay,
                 "closed_count": float(stats.get("closed_count", 0.0) or 0.0) * decay,
+                "win_count": float(stats.get("win_count", 0.0) or 0.0) * decay,
+                "loss_count": float(stats.get("loss_count", 0.0) or 0.0) * decay,
+                "breakeven_count": float(stats.get("breakeven_count", 0.0) or 0.0) * decay,
                 "net_pl": float(stats.get("net_pl", 0.0) or 0.0) * decay,
+                "gross_win_pl": float(stats.get("gross_win_pl", 0.0) or 0.0) * decay,
+                "gross_loss_pl": float(stats.get("gross_loss_pl", 0.0) or 0.0) * decay,
                 "half_spread_cost": float(stats.get("half_spread_cost", 0.0) or 0.0) * decay,
             }
 
@@ -1764,15 +1770,15 @@ def update_instrument_quality(
             continue
         stats = quality.setdefault(
             instrument,
-            {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+            empty_quality_stats(),
         )
         stats["fill_count"] += 1.0
         stats["half_spread_cost"] += _safe_number(fill.get("halfSpreadCost")) or 0.0
         pl = _safe_number(fill.get("pl")) or 0.0
         if pl or submission.get("action") == "close" or fill.get("tradesClosed") or fill.get("tradeReduced"):
-            stats["closed_count"] += 1.0
-            stats["net_pl"] += pl
+            record_closed_trade(stats, pl)
 
+    enrich_quality_rates(quality)
     return {
         instrument: stats
         for instrument, stats in quality.items()
@@ -1807,15 +1813,15 @@ def transaction_quality_from_transactions(transactions: list[object]) -> dict[st
             continue
         stats = quality.setdefault(
             instrument,
-            {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+            empty_quality_stats(),
         )
         stats["fill_count"] += 1.0
         stats["half_spread_cost"] += _safe_number(item.get("halfSpreadCost")) or 0.0
         pl = _safe_number(item.get("pl")) or 0.0
         closed = bool(item.get("tradesClosed") or item.get("tradeReduced") or item.get("tradesReduced"))
         if pl or closed:
-            stats["closed_count"] += 1.0
-            stats["net_pl"] += pl
+            record_closed_trade(stats, pl)
+    enrich_quality_rates(quality)
     return quality
 
 
@@ -1832,7 +1838,7 @@ def merge_instrument_quality(
                 continue
             target = merged.setdefault(
                 str(instrument),
-                {"fill_count": 0.0, "closed_count": 0.0, "net_pl": 0.0, "half_spread_cost": 0.0},
+                empty_quality_stats(),
             )
             fill_count = float(stats.get("fill_count", 0.0) or 0.0)
             closed_count = float(stats.get("closed_count", 0.0) or 0.0)
@@ -1842,10 +1848,114 @@ def merge_instrument_quality(
             if closed_count > target["closed_count"]:
                 target["closed_count"] = closed_count
                 target["net_pl"] = float(stats.get("net_pl", 0.0) or 0.0)
+                target["win_count"] = float(stats.get("win_count", 0.0) or 0.0)
+                target["loss_count"] = float(stats.get("loss_count", 0.0) or 0.0)
+                target["breakeven_count"] = float(stats.get("breakeven_count", 0.0) or 0.0)
+                target["gross_win_pl"] = float(stats.get("gross_win_pl", 0.0) or 0.0)
+                target["gross_loss_pl"] = float(stats.get("gross_loss_pl", 0.0) or 0.0)
+                apply_quality_rates(target)
+    enrich_quality_rates(merged)
     return {
         instrument: stats
         for instrument, stats in merged.items()
         if stats.get("fill_count", 0.0) >= 0.05 or abs(stats.get("net_pl", 0.0)) >= 0.001
+    }
+
+
+def empty_quality_stats() -> dict[str, float]:
+    return {
+        "fill_count": 0.0,
+        "closed_count": 0.0,
+        "win_count": 0.0,
+        "loss_count": 0.0,
+        "breakeven_count": 0.0,
+        "net_pl": 0.0,
+        "gross_win_pl": 0.0,
+        "gross_loss_pl": 0.0,
+        "half_spread_cost": 0.0,
+        "win_rate": 0.0,
+        "loss_rate": 0.0,
+        "avg_win_pl": 0.0,
+        "avg_loss_pl": 0.0,
+        "profit_factor": 0.0,
+        "classified_closed_count": 0.0,
+        "unclassified_closed_count": 0.0,
+    }
+
+
+def record_closed_trade(stats: dict[str, float], pl: float) -> None:
+    stats["closed_count"] = float(stats.get("closed_count", 0.0) or 0.0) + 1.0
+    stats["net_pl"] = float(stats.get("net_pl", 0.0) or 0.0) + pl
+    if pl > 0:
+        stats["win_count"] = float(stats.get("win_count", 0.0) or 0.0) + 1.0
+        stats["gross_win_pl"] = float(stats.get("gross_win_pl", 0.0) or 0.0) + pl
+    elif pl < 0:
+        stats["loss_count"] = float(stats.get("loss_count", 0.0) or 0.0) + 1.0
+        stats["gross_loss_pl"] = float(stats.get("gross_loss_pl", 0.0) or 0.0) + pl
+    else:
+        stats["breakeven_count"] = float(stats.get("breakeven_count", 0.0) or 0.0) + 1.0
+    apply_quality_rates(stats)
+
+
+def apply_quality_rates(stats: dict[str, float]) -> None:
+    closed_count = float(stats.get("closed_count", 0.0) or 0.0)
+    win_count = float(stats.get("win_count", 0.0) or 0.0)
+    loss_count = float(stats.get("loss_count", 0.0) or 0.0)
+    breakeven_count = float(stats.get("breakeven_count", 0.0) or 0.0)
+    classified_count = win_count + loss_count + breakeven_count
+    gross_win = float(stats.get("gross_win_pl", 0.0) or 0.0)
+    gross_loss = float(stats.get("gross_loss_pl", 0.0) or 0.0)
+    rate_denominator = classified_count or closed_count
+    stats["classified_closed_count"] = classified_count
+    stats["unclassified_closed_count"] = max(0.0, closed_count - classified_count)
+    stats["win_rate"] = win_count / rate_denominator if rate_denominator else 0.0
+    stats["loss_rate"] = loss_count / rate_denominator if rate_denominator else 0.0
+    stats["avg_win_pl"] = gross_win / win_count if win_count else 0.0
+    stats["avg_loss_pl"] = gross_loss / loss_count if loss_count else 0.0
+    stats["profit_factor"] = gross_win / abs(gross_loss) if gross_loss else (999.0 if gross_win else 0.0)
+
+
+def enrich_quality_rates(quality: dict[str, dict[str, float]]) -> None:
+    for stats in quality.values():
+        apply_quality_rates(stats)
+
+
+def summarize_trade_performance(quality: dict[str, dict[str, float]]) -> dict[str, object]:
+    totals = empty_quality_stats()
+    for stats in quality.values():
+        for key in (
+            "fill_count",
+            "closed_count",
+            "win_count",
+            "loss_count",
+            "breakeven_count",
+            "net_pl",
+            "gross_win_pl",
+            "gross_loss_pl",
+            "half_spread_cost",
+        ):
+            totals[key] += float(stats.get(key, 0.0) or 0.0)
+    apply_quality_rates(totals)
+    by_instrument = []
+    for instrument, stats in quality.items():
+        if float(stats.get("closed_count", 0.0) or 0.0) <= 0:
+            continue
+        by_instrument.append(
+            {
+                "instrument": instrument,
+                "closed_count": stats.get("closed_count", 0.0),
+                "win_count": stats.get("win_count", 0.0),
+                "loss_count": stats.get("loss_count", 0.0),
+                "win_rate": stats.get("win_rate", 0.0),
+                "net_pl": stats.get("net_pl", 0.0),
+                "profit_factor": stats.get("profit_factor", 0.0),
+            }
+        )
+    by_instrument.sort(key=lambda row: (float(row["net_pl"]), float(row["win_rate"])))
+    return {
+        "overall": totals,
+        "worst_instruments": by_instrument[:10],
+        "best_instruments": list(reversed(by_instrument[-10:])),
     }
 
 

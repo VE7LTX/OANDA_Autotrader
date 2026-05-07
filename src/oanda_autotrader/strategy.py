@@ -20,6 +20,7 @@ class StrategyConfig:
     atr_period: int = 14
     atr_stop_multiple: float = 1.5
     atr_target_multiple: float = 2.5
+    min_risk_reward_ratio: float = 2.0
     risk_per_trade_fraction: float = 0.0025
     long_score_threshold: float = 2.25
     short_score_threshold: float = 2.0
@@ -74,6 +75,19 @@ def moving_average_crossover(
         "rsi": latest_rsi,
         "fib_retracement": fib_ratio,
     }
+    stop_distance = latest_atr * config.atr_stop_multiple
+    target_distance = projected_target_distance(
+        latest_atr=latest_atr,
+        stop_distance=stop_distance,
+        fast_ma=fast_ma,
+        slow_ma=slow_ma,
+        score=max(long_score, short_score),
+        min_risk_reward_ratio=config.min_risk_reward_ratio,
+        atr_target_multiple=config.atr_target_multiple,
+    )
+    common_meta["stop_distance"] = stop_distance
+    common_meta["target_distance"] = target_distance
+    common_meta["risk_reward_ratio"] = target_distance / max(stop_distance, 1e-9)
 
     if regime_score < config.regime_score_threshold:
         if current_units != 0 and separation < config.min_separation:
@@ -101,8 +115,8 @@ def moving_average_crossover(
             units=units,
             confidence=0.6,
             reason="long_score_passed",
-            stop_loss_price=format_instrument_price(config.instrument, last_price - (latest_atr * config.atr_stop_multiple), config.price_precision),
-            take_profit_price=format_instrument_price(config.instrument, last_price + (latest_atr * config.atr_target_multiple), config.price_precision),
+            stop_loss_price=format_instrument_price(config.instrument, last_price - stop_distance, config.price_precision),
+            take_profit_price=format_instrument_price(config.instrument, last_price + target_distance, config.price_precision),
             metadata=common_meta,
         )
 
@@ -117,8 +131,8 @@ def moving_average_crossover(
             units=units,
             confidence=0.6,
             reason="short_score_passed",
-            stop_loss_price=format_instrument_price(config.instrument, last_price + (latest_atr * config.atr_stop_multiple), config.price_precision),
-            take_profit_price=format_instrument_price(config.instrument, last_price - (latest_atr * config.atr_target_multiple), config.price_precision),
+            stop_loss_price=format_instrument_price(config.instrument, last_price + stop_distance, config.price_precision),
+            take_profit_price=format_instrument_price(config.instrument, last_price - target_distance, config.price_precision),
             metadata=common_meta,
         )
 
@@ -127,6 +141,22 @@ def moving_average_crossover(
     if current_units < 0 and short_score < 0.5:
         return TradeAction(action="close", instrument=config.instrument, confidence=0.55, reason="short_score_decay", metadata=common_meta)
     return TradeAction(action="hold", instrument=config.instrument, reason="score_below_threshold", metadata=common_meta)
+
+
+def projected_target_distance(
+    *,
+    latest_atr: float,
+    stop_distance: float,
+    fast_ma: float,
+    slow_ma: float,
+    score: float,
+    min_risk_reward_ratio: float,
+    atr_target_multiple: float,
+) -> float:
+    baseline = latest_atr * atr_target_multiple
+    min_rr_target = stop_distance * min_risk_reward_ratio
+    trend_projection = abs(fast_ma - slow_ma) * max(2.0, min(4.0, score))
+    return max(baseline, min_rr_target, trend_projection)
 
 
 def score_long(

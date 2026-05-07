@@ -13,9 +13,12 @@ from scripts.scan_forex_opportunities import (
     apply_live_spread_guard,
     apply_adaptive_quality,
     build_decision_summary,
+    build_underlying_exposure_prune_candidates,
     build_trade_action,
     describe_exception,
     entry_throttle_reason,
+    exposure_group,
+    exposure_group_throttle_reason,
     fetch_candles_safe,
     is_fx_pair,
     is_major_fx_pair,
@@ -478,11 +481,119 @@ def test_evaluate_managed_exit_closes_on_forced_reversal(monkeypatch) -> None:
         [{"mid": {"c": "1.0"}}],
         SimpleNamespace(),
         scanner.StrategyConfig(instrument="GBP_USD"),
+        args=SimpleNamespace(
+            managed_reversal_min_score=2.0,
+            managed_reversal_score_margin=1.0,
+            managed_reversal_rsi_buffer=4.0,
+        ),
     )
     assert result is not None
     assert result["action"] == "close"
     assert result["kind"] == "exit"
     assert result["reason"] == "managed_close_short"
+
+
+def test_evaluate_managed_exit_ignores_weak_reversal_pulse(monkeypatch) -> None:
+    def fake_strategy(_candles, _strategy, _snapshot):
+        return TradeAction(
+            action="buy",
+            instrument="GBP_USD",
+            confidence=0.8,
+            reason="pulse_reversal",
+            metadata={
+                "current_units": -100,
+                "long_score": 2.2,
+                "short_score": 1.6,
+                "regime_score": 1.4,
+                "fast_ma": 1.0,
+                "slow_ma": 0.9,
+                "rsi": 51.0,
+            },
+        )
+
+    monkeypatch.setattr(scanner, "moving_average_crossover", fake_strategy)
+    monkeypatch.setattr(scanner, "atr", lambda _candles, _period: 0.001)
+
+    result = scanner.evaluate_managed_exit(
+        "GBP_USD",
+        -100,
+        [{"mid": {"c": "1.0"}}],
+        SimpleNamespace(),
+        scanner.StrategyConfig(instrument="GBP_USD"),
+        args=SimpleNamespace(
+            managed_reversal_min_score=2.75,
+            managed_reversal_score_margin=1.0,
+            managed_reversal_rsi_buffer=4.0,
+        ),
+    )
+
+    assert result is None
+
+
+def test_evaluate_managed_exit_skips_score_decay_by_default(monkeypatch) -> None:
+    def fake_strategy(_candles, _strategy, _snapshot):
+        return TradeAction(
+            action="hold",
+            instrument="GBP_USD",
+            confidence=0.0,
+            reason="score_below_threshold",
+            metadata={
+                "current_units": -100,
+                "long_score": 0.4,
+                "short_score": 0.2,
+                "regime_score": 1.4,
+                "fast_ma": 1.0,
+                "slow_ma": 1.1,
+                "rsi": 45.0,
+            },
+        )
+
+    monkeypatch.setattr(scanner, "moving_average_crossover", fake_strategy)
+    monkeypatch.setattr(scanner, "atr", lambda _candles, _period: 0.001)
+
+    result = scanner.evaluate_managed_exit(
+        "GBP_USD",
+        -100,
+        [{"mid": {"c": "1.0"}}],
+        SimpleNamespace(),
+        scanner.StrategyConfig(instrument="GBP_USD"),
+    )
+
+    assert result is None
+
+
+def test_evaluate_managed_exit_can_allow_score_decay(monkeypatch) -> None:
+    def fake_strategy(_candles, _strategy, _snapshot):
+        return TradeAction(
+            action="hold",
+            instrument="GBP_USD",
+            confidence=0.0,
+            reason="score_below_threshold",
+            metadata={
+                "current_units": -100,
+                "long_score": 0.4,
+                "short_score": 0.2,
+                "regime_score": 1.4,
+                "fast_ma": 1.0,
+                "slow_ma": 1.1,
+                "rsi": 45.0,
+            },
+        )
+
+    monkeypatch.setattr(scanner, "moving_average_crossover", fake_strategy)
+    monkeypatch.setattr(scanner, "atr", lambda _candles, _period: 0.001)
+
+    result = scanner.evaluate_managed_exit(
+        "GBP_USD",
+        -100,
+        [{"mid": {"c": "1.0"}}],
+        SimpleNamespace(),
+        scanner.StrategyConfig(instrument="GBP_USD"),
+        args=SimpleNamespace(allow_managed_decay_exits=True),
+    )
+
+    assert result is not None
+    assert result["reason"] == "managed_short_decay"
 
 
 def test_fetch_candles_safe_records_and_skips_failures() -> None:
@@ -575,6 +686,27 @@ def test_entry_throttle_limits_currency_family() -> None:
     action = TradeAction(action="sell", instrument="USD_JPY", units=100)
 
     assert entry_throttle_reason(action, recent, args, realized_pnl_day=0.0) == "currency_cooldown"
+
+
+def test_exposure_group_collapses_metal_crosses() -> None:
+    assert exposure_group("XAU_EUR") == "XAU"
+    assert exposure_group("XAU_HKD") == "XAU"
+    assert exposure_group("WTICO_USD") == "OIL"
+    assert exposure_group("BCO_USD") == "OIL"
+    assert exposure_group("EUR_USD") == "EUR_USD"
+
+
+def test_exposure_group_throttle_limits_existing_gold_exposure() -> None:
+    args = SimpleNamespace(max_underlying_positions=1, max_new_trades_per_underlying=1)
+
+    reason = exposure_group_throttle_reason(
+        "XAU_HKD",
+        {"XAU_EUR": -0.1, "EUR_USD": 100},
+        {},
+        args,
+    )
+
+    assert reason == "underlying_exposure_limit"
 
 
 def test_decision_summary_reports_below_threshold() -> None:
@@ -683,7 +815,7 @@ def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
             max_open_trades=5,
             max_gross_position_units=500,
             max_currency_gross_units=500,
-            max_currency_positions=2,
+            max_currency_positions=0,
         )
 
         def __init__(self, *args, **kwargs) -> None:
@@ -704,7 +836,7 @@ def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
         max_open_trades=5,
         max_gross_position_units=500,
         max_currency_gross_units=500,
-        max_currency_positions=2,
+        max_currency_positions=0,
         max_new_trades=5,
         state_path="missing-state.json",
     )
@@ -729,3 +861,110 @@ def test_close_candidates_bypass_entry_submit_threshold(monkeypatch) -> None:
 
     assert submissions[0]["action"] == "close"
     assert submissions[0]["result"]["submitted"] is True
+
+
+def test_submit_candidates_takes_best_metal_underlying_only(monkeypatch, tmp_path) -> None:
+    class FakeEngine:
+        policy = SimpleNamespace(
+            max_open_trades=5,
+            max_gross_position_units=500,
+            max_currency_gross_units=500,
+            max_currency_positions=0,
+        )
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def execute(self, action, snapshot, *, dry_run):
+            return {"submitted": True, "dry_run": dry_run, "order": {"instrument": action.instrument}}
+
+        def project_snapshot(self, snapshot, action):
+            positions = dict(snapshot.positions_by_instrument)
+            positions[action.instrument] = -action.units if action.action == "sell" else action.units
+            return SimpleNamespace(
+                open_trade_count=snapshot.open_trade_count + 1,
+                positions_by_instrument=positions,
+            )
+
+        def projected_gross_position_units(self, snapshot, action):
+            projected = self.project_snapshot(snapshot, action)
+            return sum(abs(units) for units in projected.positions_by_instrument.values())
+
+        def projected_currency_gross_units(self, snapshot, action):
+            return self.projected_gross_position_units(snapshot, action)
+
+    monkeypatch.setattr("scripts.scan_forex_opportunities.PracticeExecutionEngine", FakeEngine)
+    monkeypatch.setattr("scripts.scan_forex_opportunities.fetch_live_prices", lambda *_args, **_kwargs: {})
+    args = SimpleNamespace(
+        min_submit_score=5.1,
+        non_liquid_min_submit_score=5.5,
+        allow_non_liquid_trades=True,
+        max_units=100,
+        max_open_trades=5,
+        max_gross_position_units=500,
+        max_currency_gross_units=500,
+        max_currency_positions=0,
+        max_new_trades=5,
+        max_trades_per_hour=30,
+        instrument_cooldown_minutes=0,
+        currency_cooldown_minutes=0,
+        max_underlying_positions=1,
+        max_new_trades_per_underlying=1,
+        max_session_loss=1000,
+        state_path=str(tmp_path / "state.json"),
+        disable_live_spread_guard=True,
+    )
+    app_config = SimpleNamespace(environment="practice")
+    snapshot = SimpleNamespace(open_trade_count=0, positions_by_instrument={})
+    candidates = [
+        {
+            "instrument": "XAU_EUR",
+            "instrument_class": "metal",
+            "action": "sell",
+            "score": 6.1,
+            "reason": "short_score_passed",
+            "units": 0.1,
+            "stop_loss_price": "4001.0",
+            "take_profit_price": "3990.0",
+        },
+        {
+            "instrument": "XAU_HKD",
+            "instrument_class": "metal",
+            "action": "sell",
+            "score": 6.0,
+            "reason": "short_score_passed",
+            "units": 0.1,
+            "stop_loss_price": "36760.0",
+            "take_profit_price": "36700.0",
+        },
+    ]
+
+    submissions = maybe_submit_candidates(
+        app_config=app_config,
+        snapshot=snapshot,
+        candidates=candidates,
+        args=args,
+    )
+
+    assert [item["instrument"] for item in submissions] == ["XAU_EUR"]
+    assert candidates[1]["blocked_reason"] == "underlying_exposure_limit"
+
+
+def test_underlying_prune_closes_weaker_duplicate_gold_positions() -> None:
+    args = SimpleNamespace(max_underlying_positions=1)
+    quality = {
+        "XAU_GBP": {"net_pl": 4.0, "win_rate": 1.0, "profit_factor": 5.0, "closed_count": 3.0},
+        "XAU_EUR": {"net_pl": -1.0, "win_rate": 0.0, "profit_factor": 0.0, "closed_count": 1.0},
+        "XAU_HKD": {"net_pl": 2.0, "win_rate": 0.5, "profit_factor": 2.0, "closed_count": 2.0},
+    }
+
+    candidates = build_underlying_exposure_prune_candidates(
+        {"XAU_GBP": -0.1, "XAU_EUR": -0.1, "XAU_HKD": -0.1, "EUR_USD": 100},
+        quality,
+        args,
+    )
+
+    assert [item["instrument"] for item in candidates] == ["XAU_HKD", "XAU_EUR"]
+    assert all(item["action"] == "close" for item in candidates)
+    assert all(item["reason"] == "underlying_exposure_prune" for item in candidates)
+    assert candidates[0]["metadata"]["kept_instruments"] == ["XAU_GBP"]

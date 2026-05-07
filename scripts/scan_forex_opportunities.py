@@ -150,6 +150,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--slow-window", type=int, default=20)
     parser.add_argument("--units", type=int, default=100)
     parser.add_argument("--risk-per-trade-fraction", type=float, default=0.0025)
+    parser.add_argument("--min-risk-reward-ratio", type=float, default=2.0)
     parser.add_argument("--long-score-threshold", type=float, default=3.0)
     parser.add_argument("--short-score-threshold", type=float, default=1.75)
     parser.add_argument("--regime-score-threshold", type=float, default=1.25)
@@ -162,6 +163,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-trailing-atr-multiple", type=float, default=0.75)
     parser.add_argument("--exit-break-even-atr-multiple", type=float, default=0.5)
     parser.add_argument("--exit-max-hold-candles", type=int, default=18)
+    parser.add_argument("--allow-managed-decay-exits", action="store_true")
+    parser.add_argument("--managed-reversal-min-score", type=float, default=2.75)
+    parser.add_argument("--managed-reversal-score-margin", type=float, default=1.0)
+    parser.add_argument("--managed-reversal-rsi-buffer", type=float, default=4.0)
     parser.add_argument("--max-open-trades", type=int, default=5)
     parser.add_argument("--max-units", type=int, default=100)
     parser.add_argument("--max-gross-position-units", type=int, default=300)
@@ -186,6 +191,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-trades-per-hour", type=int, default=2)
     parser.add_argument("--instrument-cooldown-minutes", type=int, default=180)
     parser.add_argument("--currency-cooldown-minutes", type=int, default=60)
+    parser.add_argument("--max-underlying-positions", type=int, default=1)
+    parser.add_argument("--max-new-trades-per-underlying", type=int, default=1)
     parser.add_argument("--max-session-loss", type=float, default=1.0)
     parser.add_argument("--disable-adaptive-quality", action="store_true")
     parser.add_argument("--adaptive-min-atr-ratio", type=float, default=0.00012)
@@ -290,6 +297,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         slow_window=args.slow_window,
         units=args.max_units,
         risk_per_trade_fraction=args.risk_per_trade_fraction,
+        min_risk_reward_ratio=args.min_risk_reward_ratio,
         long_score_threshold=args.long_score_threshold,
         short_score_threshold=args.short_score_threshold,
         regime_score_threshold=args.regime_score_threshold,
@@ -306,6 +314,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         atr_period=strategy.atr_period,
         atr_stop_multiple=strategy.atr_stop_multiple,
         atr_target_multiple=strategy.atr_target_multiple,
+        min_risk_reward_ratio=strategy.min_risk_reward_ratio,
         risk_per_trade_fraction=strategy.risk_per_trade_fraction,
         long_score_threshold=args.exit_long_score_threshold,
         short_score_threshold=args.exit_short_score_threshold,
@@ -339,6 +348,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             atr_period=strategy.atr_period,
             atr_stop_multiple=strategy.atr_stop_multiple,
             atr_target_multiple=strategy.atr_target_multiple,
+            min_risk_reward_ratio=strategy.min_risk_reward_ratio,
             risk_per_trade_fraction=strategy.risk_per_trade_fraction,
             long_score_threshold=strategy.long_score_threshold,
             short_score_threshold=strategy.short_score_threshold,
@@ -405,6 +415,13 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 scan_errors=scan_errors,
             )
         )
+    managed_actions.extend(
+        build_underlying_exposure_prune_candidates(
+            snapshot.positions_by_instrument,
+            instrument_quality,
+            args,
+        )
+    )
 
     candidates = managed_actions + entry_candidates
 
@@ -607,6 +624,17 @@ def instrument_class(name: str, metadata: dict[str, object] | None = None) -> st
     return "unknown"
 
 
+def exposure_group(instrument: str) -> str:
+    instrument = str(instrument or "")
+    if is_metal_instrument(instrument):
+        return instrument.split("_", 1)[0]
+    if is_commodity_instrument(instrument):
+        if instrument in {"WTICO_USD", "BCO_USD"}:
+            return "OIL"
+        return instrument.split("_", 1)[0]
+    return instrument
+
+
 def select_scan_instruments(
     tradeable: list[dict[str, object]],
     *,
@@ -772,7 +800,7 @@ def build_managed_exit_candidates(
             break_even_atr_multiple=strategy.break_even_atr_multiple,
             price_precision=(price_precisions or {}).get(instrument),
         )
-        candidate = evaluate_managed_exit(instrument, units, candles, snapshot, inst_strategy)
+        candidate = evaluate_managed_exit(instrument, units, candles, snapshot, inst_strategy, args=args)
         if candidate is not None:
             managed.append(candidate)
     return managed
@@ -784,6 +812,7 @@ def evaluate_managed_exit(
     candles: list[dict],
     snapshot,
     strategy: StrategyConfig,
+    args: argparse.Namespace | None = None,
 ) -> dict[str, object] | None:
     action = moving_average_crossover(candles, strategy, snapshot)
     latest_atr = None
@@ -799,6 +828,8 @@ def evaluate_managed_exit(
         return None
     action_name = str(action.action).lower()
     if current_units > 0 and action_name == "sell":
+        if not managed_reversal_confirmed("long", metadata, args):
+            return None
         return {
             "instrument": instrument,
             "action": "close",
@@ -815,6 +846,8 @@ def evaluate_managed_exit(
             "managed": True,
         }
     if current_units < 0 and action_name == "buy":
+        if not managed_reversal_confirmed("short", metadata, args):
+            return None
         return {
             "instrument": instrument,
             "action": "close",
@@ -830,7 +863,8 @@ def evaluate_managed_exit(
             "has_position": True,
             "managed": True,
         }
-    if current_units > 0 and metadata.get("long_score", 0.0) < 0.5:
+    allow_decay = bool(getattr(args, "allow_managed_decay_exits", False)) if args is not None else False
+    if allow_decay and current_units > 0 and metadata.get("long_score", 0.0) < 0.5:
         return {
             "instrument": instrument,
             "action": "close",
@@ -846,7 +880,7 @@ def evaluate_managed_exit(
             "has_position": True,
             "managed": True,
         }
-    if current_units < 0 and metadata.get("short_score", 0.0) < 0.5:
+    if allow_decay and current_units < 0 and metadata.get("short_score", 0.0) < 0.5:
         return {
             "instrument": instrument,
             "action": "close",
@@ -863,6 +897,24 @@ def evaluate_managed_exit(
             "managed": True,
         }
     return None
+
+
+def managed_reversal_confirmed(current_side: str, metadata: dict[str, object], args: argparse.Namespace | None) -> bool:
+    min_score = float(getattr(args, "managed_reversal_min_score", 2.75) if args is not None else 2.75)
+    margin = float(getattr(args, "managed_reversal_score_margin", 1.0) if args is not None else 1.0)
+    rsi_buffer = float(getattr(args, "managed_reversal_rsi_buffer", 4.0) if args is not None else 4.0)
+    long_score = float(metadata.get("long_score", 0.0) or 0.0)
+    short_score = float(metadata.get("short_score", 0.0) or 0.0)
+    rsi = metadata.get("rsi")
+    try:
+        rsi_value = float(rsi)
+    except (TypeError, ValueError):
+        rsi_value = 50.0
+    if current_side == "long":
+        return short_score >= min_score and (short_score - long_score) >= margin and rsi_value <= (50.0 - rsi_buffer)
+    if current_side == "short":
+        return long_score >= min_score and (long_score - short_score) >= margin and rsi_value >= (50.0 + rsi_buffer)
+    return False
 
 
 def maybe_submit_best_candidate(
@@ -907,6 +959,7 @@ def maybe_submit_candidates(
     projected_snapshot = snapshot
     submissions: list[dict[str, object]] = []
     new_entries_submitted = 0
+    submitted_groups: dict[str, int] = {}
     state = load_state_file(Path(args.state_path))
     recent_entries = list(state.get("recent_entries") or [])
     realized_pnl_day = float(state.get("realized_pnl_day", 0.0) or 0.0)
@@ -938,6 +991,15 @@ def maybe_submit_candidates(
             if int(projected_snapshot.open_trade_count) >= args.max_open_trades:
                 continue
             if candidate.get("has_position"):
+                continue
+            group_reason = exposure_group_throttle_reason(
+                action.instrument,
+                projected_snapshot.positions_by_instrument,
+                submitted_groups,
+                args,
+            )
+            if group_reason:
+                candidate["blocked_reason"] = group_reason
                 continue
             throttle_reason = entry_throttle_reason(
                 action,
@@ -994,6 +1056,8 @@ def maybe_submit_candidates(
         projected_snapshot = engine.project_snapshot(projected_snapshot, action)
         if action.action != "close":
             new_entries_submitted += 1
+            group = exposure_group(action.instrument)
+            submitted_groups[group] = submitted_groups.get(group, 0) + 1
             recent_entries.append(
                 {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1471,6 +1535,87 @@ def entry_throttle_reason(
             if action_currencies & entry_currencies and (entry_age_minutes(entry, now) or 0.0) < currency_cooldown:
                 return "currency_cooldown"
     return None
+
+
+def exposure_group_throttle_reason(
+    instrument: str,
+    positions_by_instrument: dict[str, float],
+    submitted_groups: dict[str, int],
+    args: argparse.Namespace,
+) -> str | None:
+    group = exposure_group(instrument)
+    cls = instrument_class(instrument)
+    if cls not in {"metal", "commodity"}:
+        return None
+    max_existing = int(getattr(args, "max_underlying_positions", 1) or 0)
+    max_new = int(getattr(args, "max_new_trades_per_underlying", 1) or 0)
+    if max_existing > 0:
+        existing = sum(
+            1
+            for name, units in (positions_by_instrument or {}).items()
+            if units and exposure_group(str(name)) == group
+        )
+        if existing >= max_existing:
+            return "underlying_exposure_limit"
+    if max_new > 0 and submitted_groups.get(group, 0) >= max_new:
+        return "underlying_new_trade_limit"
+    return None
+
+
+def build_underlying_exposure_prune_candidates(
+    positions_by_instrument: dict[str, float],
+    instrument_quality: dict[str, object],
+    args: argparse.Namespace,
+) -> list[dict[str, object]]:
+    max_existing = int(getattr(args, "max_underlying_positions", 1) or 0)
+    if max_existing <= 0:
+        return []
+    grouped: dict[str, list[tuple[str, float]]] = {}
+    for instrument, units in (positions_by_instrument or {}).items():
+        if not units or instrument_class(str(instrument)) not in {"metal", "commodity"}:
+            continue
+        grouped.setdefault(exposure_group(str(instrument)), []).append((str(instrument), float(units)))
+
+    candidates: list[dict[str, object]] = []
+    for group, positions in grouped.items():
+        if len(positions) <= max_existing:
+            continue
+        ranked = sorted(
+            positions,
+            key=lambda item: exposure_keep_score(item[0], instrument_quality),
+            reverse=True,
+        )
+        keep = {instrument for instrument, _units in ranked[:max_existing]}
+        for instrument, units in ranked[max_existing:]:
+            candidates.append(
+                {
+                    "instrument": instrument,
+                    "action": "close",
+                    "kind": "exit",
+                    "reason": "underlying_exposure_prune",
+                    "score": 0.95,
+                    "confidence": 0.6,
+                    "units": abs(units),
+                    "instrument_class": instrument_class(instrument),
+                    "metadata": {
+                        "exposure_group": group,
+                        "kept_instruments": sorted(keep),
+                        "keep_score": exposure_keep_score(instrument, instrument_quality),
+                    },
+                }
+            )
+    return candidates
+
+
+def exposure_keep_score(instrument: str, instrument_quality: dict[str, object]) -> float:
+    stats = instrument_quality.get(instrument) if isinstance(instrument_quality, dict) else None
+    if not isinstance(stats, dict):
+        return 0.0
+    net_pl = float(stats.get("net_pl", 0.0) or 0.0)
+    win_rate = float(stats.get("win_rate", 0.0) or 0.0)
+    profit_factor = min(10.0, float(stats.get("profit_factor", 0.0) or 0.0))
+    closed_count = min(10.0, float(stats.get("closed_count", 0.0) or 0.0))
+    return net_pl + win_rate + (profit_factor * 0.1) + (closed_count * 0.01)
 
 
 def entry_age_minutes(entry: dict[str, object], now: datetime) -> float | None:

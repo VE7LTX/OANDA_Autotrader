@@ -5,6 +5,7 @@ from oanda_autotrader.strategy import (
     StrategyConfig,
     format_instrument_price,
     moving_average_crossover,
+    projected_target_distance,
     retracement_ratio,
     score_long,
 )
@@ -53,6 +54,21 @@ def test_strategy_buys_when_fast_above_slow() -> None:
     )
     assert action.action == "buy"
     assert action.units > 0
+    assert action.metadata["risk_reward_ratio"] >= 2.0
+
+
+def test_projected_target_distance_enforces_minimum_risk_reward() -> None:
+    target = projected_target_distance(
+        latest_atr=0.001,
+        stop_distance=0.0015,
+        fast_ma=1.1000,
+        slow_ma=1.1001,
+        score=2.0,
+        min_risk_reward_ratio=2.0,
+        atr_target_multiple=2.5,
+    )
+
+    assert target == 0.003
 
 
 def test_strategy_holds_when_already_long() -> None:

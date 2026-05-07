@@ -209,6 +209,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scorecard-min-closed-count", type=float, default=3.0)
     parser.add_argument("--scorecard-quarantine-min-closed-count", type=float, default=2.0)
     parser.add_argument("--scorecard-quarantine-net-loss", type=float, default=1.0)
+    parser.add_argument("--scorecard-catastrophic-net-loss", type=float, default=5.0)
+    parser.add_argument("--scorecard-catastrophic-half-spread-cost", type=float, default=0.75)
     parser.add_argument("--scorecard-min-profit-factor", type=float, default=0.85)
     parser.add_argument("--scorecard-min-win-rate", type=float, default=0.35)
     parser.add_argument("--scorecard-good-profit-factor", type=float, default=1.8)
@@ -639,6 +641,8 @@ def instrument_scorecard_entry(
     min_closed = float(getattr(args, "scorecard_min_closed_count", 3.0) or 0.0)
     quarantine_min_closed = float(getattr(args, "scorecard_quarantine_min_closed_count", 2.0) or 0.0)
     quarantine_net_loss = abs(float(getattr(args, "scorecard_quarantine_net_loss", 1.0) or 0.0))
+    catastrophic_net_loss = abs(float(getattr(args, "scorecard_catastrophic_net_loss", 5.0) or 0.0))
+    catastrophic_half_spread = abs(float(getattr(args, "scorecard_catastrophic_half_spread_cost", 0.75) or 0.0))
     min_profit_factor = float(getattr(args, "scorecard_min_profit_factor", 0.85) or 0.0)
     min_win_rate = float(getattr(args, "scorecard_min_win_rate", 0.35) or 0.0)
     good_profit_factor = float(getattr(args, "scorecard_good_profit_factor", 1.8) or 0.0)
@@ -676,6 +680,13 @@ def instrument_scorecard_entry(
             or (min_win_rate > 0 and win_rate < min_win_rate)
         )
     )
+    catastrophic_loss = closed_count >= 1 and catastrophic_net_loss > 0 and net_pl <= -catastrophic_net_loss
+    catastrophic_spread = fill_count >= 1 and catastrophic_half_spread > 0 and avg_half_spread >= catastrophic_half_spread
+    if catastrophic_loss:
+        reasons.append("catastrophic_loss")
+    if catastrophic_spread:
+        reasons.append("catastrophic_spread_cost")
+    quarantine = quarantine or catastrophic_loss or catastrophic_spread
     if quarantine:
         status = "quarantined"
         threshold_adjustment = max_add

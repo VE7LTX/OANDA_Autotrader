@@ -441,6 +441,8 @@ def test_instrument_scorecard_quarantines_bad_instruments() -> None:
         scorecard_min_closed_count=3.0,
         scorecard_quarantine_min_closed_count=2.0,
         scorecard_quarantine_net_loss=1.0,
+        scorecard_catastrophic_net_loss=5.0,
+        scorecard_catastrophic_half_spread_cost=0.75,
         scorecard_min_profit_factor=0.85,
         scorecard_min_win_rate=0.35,
         scorecard_good_profit_factor=1.8,
@@ -469,6 +471,43 @@ def test_instrument_scorecard_quarantines_bad_instruments() -> None:
     assert scorecard["XAU_USD"]["status"] == "quarantined"
     assert scorecard["XAU_USD"]["threshold_adjustment"] == 1.25
     assert summary["counts"]["quarantined"] == 1
+
+
+def test_instrument_scorecard_quarantines_single_catastrophic_loss() -> None:
+    args = SimpleNamespace(
+        disable_instrument_scorecard=False,
+        scorecard_min_closed_count=3.0,
+        scorecard_quarantine_min_closed_count=2.0,
+        scorecard_quarantine_net_loss=1.0,
+        scorecard_catastrophic_net_loss=5.0,
+        scorecard_catastrophic_half_spread_cost=0.75,
+        scorecard_min_profit_factor=0.85,
+        scorecard_min_win_rate=0.35,
+        scorecard_good_profit_factor=1.8,
+        scorecard_good_win_rate=0.55,
+        scorecard_max_threshold_add=1.25,
+        scorecard_max_threshold_discount=0.25,
+        adaptive_max_avg_loss=0.08,
+        adaptive_max_avg_half_spread_cost=0.08,
+    )
+    quality = {
+        "XPT_USD": {
+            "fill_count": 1,
+            "closed_count": 1,
+            "win_count": 0,
+            "loss_count": 1,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "net_pl": -13.3,
+            "half_spread_cost": 1.6,
+        }
+    }
+
+    scorecard = build_instrument_scorecard(quality, args)
+
+    assert scorecard["XPT_USD"]["status"] == "quarantined"
+    assert "catastrophic_loss" in scorecard["XPT_USD"]["reasons"]
+    assert "catastrophic_spread_cost" in scorecard["XPT_USD"]["reasons"]
 
 
 def test_required_submit_score_uses_scorecard_adjustment() -> None:

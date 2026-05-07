@@ -453,6 +453,7 @@ def format_state_summary(state: dict) -> str:
                 f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
                 f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
                 f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
+                f"Scorecard: {format_scorecard_line(state.get('instrument_scorecard') or {})}",
             ]
         )
     return "\n".join(
@@ -464,6 +465,7 @@ def format_state_summary(state: dict) -> str:
             f"Realized PnL: {_fmt(state.get('realized_pnl_day'))}",
             f"Unrealized PnL: {_fmt(state.get('unrealized_pnl'))}",
             f"Win/Loss: {format_performance_line(state.get('performance_summary') or {})}",
+            f"Scorecard: {format_scorecard_line(state.get('instrument_scorecard') or {})}",
         ]
     )
 
@@ -525,6 +527,17 @@ def format_performance_line(performance: dict) -> str:
     )
 
 
+def format_scorecard_line(scorecard: dict) -> str:
+    counts = scorecard.get("counts") if isinstance(scorecard, dict) else {}
+    if not isinstance(counts, dict) or not counts:
+        return "n/a"
+    quarantined = int(float(counts.get("quarantined", 0) or 0))
+    restricted = int(float(counts.get("restricted", 0) or 0))
+    preferred = int(float(counts.get("preferred", 0) or 0))
+    learning = int(float(counts.get("learning", 0) or 0))
+    return f"{preferred} preferred | {restricted} restricted | {quarantined} quarantined | {learning} learning"
+
+
 def find_latest_submission_record(audit_tail: list[dict]) -> dict:
     for record in reversed(audit_tail):
         submission = record.get("submission") or {}
@@ -552,6 +565,7 @@ def format_decision_summary(decision: dict) -> str:
             f"Long: {_fmt(decision.get('long_score'))}  Short: {_fmt(decision.get('short_score'))}",
             f"Regime: {_fmt(decision.get('regime_score'))}  RSI: {_fmt(decision.get('rsi'))}",
             f"Fib retrace: {_fmt(decision.get('fib_retracement'))}",
+            f"Scorecard: {decision.get('scorecard_status', 'n/a')} adj {_fmt(decision.get('scorecard_threshold_adjustment'))}",
             f"Submitted: {decision.get('submitted_count', 0)}  Instruments: {', '.join(decision.get('instruments') or []) or 'none'}",
         ]
     )

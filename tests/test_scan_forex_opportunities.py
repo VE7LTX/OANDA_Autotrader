@@ -12,7 +12,9 @@ from scripts.scan_forex_opportunities import (
     adaptive_spread_atr_limit,
     apply_live_spread_guard,
     apply_adaptive_quality,
+    apply_instrument_scorecard_to_candidates,
     build_decision_summary,
+    build_instrument_scorecard,
     build_underlying_exposure_prune_candidates,
     build_trade_action,
     correlated_exposure_groups,
@@ -32,6 +34,7 @@ from scripts.scan_forex_opportunities import (
     select_scan_instruments,
     spread_recheck_candidates,
     summarize_trade_performance,
+    summarize_instrument_scorecard,
     transaction_quality_from_transactions,
     update_instrument_quality,
 )
@@ -430,6 +433,81 @@ def test_required_submit_score_is_higher_for_non_liquid_pairs() -> None:
     assert required_submit_score("CHF_ZAR", args) == 6.2
     assert required_submit_score("XAU_USD", args) == 6.55
     assert required_submit_score("WTICO_USD", args) == 6.65
+
+
+def test_instrument_scorecard_quarantines_bad_instruments() -> None:
+    args = SimpleNamespace(
+        disable_instrument_scorecard=False,
+        scorecard_min_closed_count=3.0,
+        scorecard_quarantine_min_closed_count=2.0,
+        scorecard_quarantine_net_loss=1.0,
+        scorecard_min_profit_factor=0.85,
+        scorecard_min_win_rate=0.35,
+        scorecard_good_profit_factor=1.8,
+        scorecard_good_win_rate=0.55,
+        scorecard_max_threshold_add=1.25,
+        scorecard_max_threshold_discount=0.25,
+        adaptive_max_avg_loss=0.08,
+        adaptive_max_avg_half_spread_cost=0.08,
+    )
+    quality = {
+        "XAU_USD": {
+            "fill_count": 4,
+            "closed_count": 3,
+            "win_count": 0,
+            "loss_count": 3,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "net_pl": -2.5,
+            "half_spread_cost": 0.4,
+        }
+    }
+
+    scorecard = build_instrument_scorecard(quality, args)
+    summary = summarize_instrument_scorecard(scorecard)
+
+    assert scorecard["XAU_USD"]["status"] == "quarantined"
+    assert scorecard["XAU_USD"]["threshold_adjustment"] == 1.25
+    assert summary["counts"]["quarantined"] == 1
+
+
+def test_required_submit_score_uses_scorecard_adjustment() -> None:
+    args = SimpleNamespace(
+        min_submit_score=5.4,
+        non_liquid_min_submit_score=6.2,
+        metal_submit_score_add=0.35,
+        commodity_submit_score_add=0.45,
+    )
+    scorecard = {"EUR_USD": {"threshold_adjustment": 0.6}}
+
+    assert required_submit_score("EUR_USD", args, scorecard) == 6.0
+
+
+def test_scorecard_marks_candidate_quarantine_before_submit() -> None:
+    args = SimpleNamespace(
+        min_submit_score=5.4,
+        non_liquid_min_submit_score=6.2,
+        metal_submit_score_add=0.35,
+        commodity_submit_score_add=0.45,
+    )
+    candidates = [{"instrument": "EUR_USD", "action": "buy", "score": 6.5}]
+    scorecard = {
+        "EUR_USD": {
+            "instrument": "EUR_USD",
+            "status": "quarantined",
+            "threshold_adjustment": 1.25,
+            "reasons": ["quarantine_loss_limit"],
+            "closed_count": 4,
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "net_pl": -2.0,
+        }
+    }
+
+    apply_instrument_scorecard_to_candidates(candidates, scorecard, args)
+
+    assert candidates[0]["blocked_reason"] == "instrument_quarantine"
+    assert candidates[0]["scorecard_status"] == "quarantined"
 
 
 def test_non_liquid_trade_gate_blocks_exotics_by_default() -> None:

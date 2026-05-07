@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
@@ -204,6 +205,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--adaptive-max-penalty", type=float, default=1.2)
     parser.add_argument("--disable-transaction-quality-seed", action="store_true")
     parser.add_argument("--transaction-quality-lookback", type=int, default=1000)
+    parser.add_argument("--disable-instrument-scorecard", action="store_true")
+    parser.add_argument("--scorecard-min-closed-count", type=float, default=3.0)
+    parser.add_argument("--scorecard-quarantine-min-closed-count", type=float, default=2.0)
+    parser.add_argument("--scorecard-quarantine-net-loss", type=float, default=1.0)
+    parser.add_argument("--scorecard-min-profit-factor", type=float, default=0.85)
+    parser.add_argument("--scorecard-min-win-rate", type=float, default=0.35)
+    parser.add_argument("--scorecard-good-profit-factor", type=float, default=1.8)
+    parser.add_argument("--scorecard-good-win-rate", type=float, default=0.55)
+    parser.add_argument("--scorecard-max-threshold-add", type=float, default=1.25)
+    parser.add_argument("--scorecard-max-threshold-discount", type=float, default=0.25)
     parser.add_argument("--disable-live-spread-guard", action="store_true")
     parser.add_argument("--max-spread-atr-ratio", type=float, default=0.65)
     parser.add_argument("--disable-adaptive-spread-guard", action="store_true")
@@ -288,6 +299,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
     if not bool(getattr(args, "disable_transaction_quality_seed", False)):
         seeded_quality = fetch_transaction_quality_seed(account_client, app_config.account_id, summary, args)
         instrument_quality = merge_instrument_quality(instrument_quality, seeded_quality)
+    instrument_scorecard = build_instrument_scorecard(instrument_quality, args)
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -403,6 +415,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 "has_position": instrument in held,
             }
         )
+    apply_instrument_scorecard_to_candidates(entry_candidates, instrument_scorecard, args)
 
     if args.manage_exits and held:
         managed_actions.extend(
@@ -444,6 +457,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "short_opportunities": rank_directional_watchlist(entry_candidates, "short_score"),
         "scan_errors": scan_errors,
         "instrument_quality_seed": seeded_quality,
+        "instrument_scorecard": summarize_instrument_scorecard(instrument_scorecard),
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -590,6 +604,164 @@ def apply_adaptive_quality(
         "reasons": reasons,
         "atr_ratio": atr_ratio,
     }
+
+
+def build_instrument_scorecard(
+    instrument_quality: dict[str, object],
+    args: argparse.Namespace,
+) -> dict[str, dict[str, object]]:
+    if bool(getattr(args, "disable_instrument_scorecard", False)):
+        return {}
+    scorecard: dict[str, dict[str, object]] = {}
+    if not isinstance(instrument_quality, dict):
+        return scorecard
+    for instrument, stats in instrument_quality.items():
+        if not isinstance(stats, dict):
+            continue
+        scorecard[str(instrument)] = instrument_scorecard_entry(str(instrument), stats, args)
+    return scorecard
+
+
+def instrument_scorecard_entry(
+    instrument: str,
+    stats: dict[str, object],
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    closed_count = float(stats.get("closed_count", 0.0) or 0.0)
+    fill_count = float(stats.get("fill_count", 0.0) or 0.0)
+    win_rate = float(stats.get("win_rate", 0.0) or 0.0)
+    profit_factor = float(stats.get("profit_factor", 0.0) or 0.0)
+    net_pl = float(stats.get("net_pl", 0.0) or 0.0)
+    half_spread_cost = float(stats.get("half_spread_cost", 0.0) or 0.0)
+    avg_pl = net_pl / closed_count if closed_count else 0.0
+    avg_half_spread = half_spread_cost / fill_count if fill_count else 0.0
+
+    min_closed = float(getattr(args, "scorecard_min_closed_count", 3.0) or 0.0)
+    quarantine_min_closed = float(getattr(args, "scorecard_quarantine_min_closed_count", 2.0) or 0.0)
+    quarantine_net_loss = abs(float(getattr(args, "scorecard_quarantine_net_loss", 1.0) or 0.0))
+    min_profit_factor = float(getattr(args, "scorecard_min_profit_factor", 0.85) or 0.0)
+    min_win_rate = float(getattr(args, "scorecard_min_win_rate", 0.35) or 0.0)
+    good_profit_factor = float(getattr(args, "scorecard_good_profit_factor", 1.8) or 0.0)
+    good_win_rate = float(getattr(args, "scorecard_good_win_rate", 0.55) or 0.0)
+    max_add = abs(float(getattr(args, "scorecard_max_threshold_add", 1.25) or 0.0))
+    max_discount = abs(float(getattr(args, "scorecard_max_threshold_discount", 0.25) or 0.0))
+    max_avg_loss = abs(float(getattr(args, "adaptive_max_avg_loss", 0.08) or 0.08))
+    max_half_spread = abs(float(getattr(args, "adaptive_max_avg_half_spread_cost", 0.08) or 0.08))
+
+    reasons: list[str] = []
+    threshold_adjustment = 0.0
+    status = "learning" if closed_count < min_closed else "neutral"
+
+    enough_data = closed_count >= min_closed
+    if enough_data:
+        if net_pl < 0:
+            threshold_adjustment += min(0.45, abs(avg_pl) / max(max_avg_loss, 1e-9) * 0.18)
+            reasons.append("negative_expectancy")
+        if min_profit_factor > 0 and profit_factor < min_profit_factor:
+            threshold_adjustment += min(0.35, (min_profit_factor - profit_factor) / min_profit_factor * 0.35)
+            reasons.append("weak_profit_factor")
+        if min_win_rate > 0 and win_rate < min_win_rate:
+            threshold_adjustment += min(0.30, (min_win_rate - win_rate) / min_win_rate * 0.30)
+            reasons.append("weak_win_rate")
+        if fill_count >= min_closed and max_half_spread > 0 and avg_half_spread > max_half_spread:
+            threshold_adjustment += min(0.25, avg_half_spread / max_half_spread * 0.10)
+            reasons.append("expensive_spread")
+
+    quarantine = (
+        closed_count >= quarantine_min_closed
+        and quarantine_net_loss > 0
+        and net_pl <= -quarantine_net_loss
+        and (
+            (min_profit_factor > 0 and profit_factor < min_profit_factor)
+            or (min_win_rate > 0 and win_rate < min_win_rate)
+        )
+    )
+    if quarantine:
+        status = "quarantined"
+        threshold_adjustment = max_add
+        if "quarantine_loss_limit" not in reasons:
+            reasons.append("quarantine_loss_limit")
+    elif enough_data and threshold_adjustment > 0:
+        status = "restricted"
+        threshold_adjustment = min(max_add, threshold_adjustment)
+    elif enough_data and net_pl > 0 and (profit_factor >= good_profit_factor or win_rate >= good_win_rate):
+        status = "preferred"
+        threshold_adjustment = -min(max_discount, max_discount * min(1.0, max(profit_factor / max(good_profit_factor, 1e-9), win_rate / max(good_win_rate, 1e-9))))
+        reasons.append("positive_expectancy")
+    else:
+        threshold_adjustment = min(max_add, threshold_adjustment)
+
+    return {
+        "instrument": instrument,
+        "status": status,
+        "threshold_adjustment": threshold_adjustment,
+        "reasons": reasons,
+        "closed_count": closed_count,
+        "fill_count": fill_count,
+        "win_rate": win_rate,
+        "profit_factor": profit_factor,
+        "net_pl": net_pl,
+        "avg_pl": avg_pl,
+        "avg_half_spread_cost": avg_half_spread,
+    }
+
+
+def summarize_instrument_scorecard(scorecard: dict[str, dict[str, object]]) -> dict[str, object]:
+    if not isinstance(scorecard, dict):
+        return {"counts": {}, "quarantined": [], "restricted": [], "preferred": []}
+    counts = Counter(str(item.get("status") or "unknown") for item in scorecard.values() if isinstance(item, dict))
+
+    def ranked(status: str, *, reverse: bool = False) -> list[dict[str, object]]:
+        rows = [
+            item for item in scorecard.values()
+            if isinstance(item, dict) and item.get("status") == status
+        ]
+        rows.sort(key=lambda item: float(item.get("net_pl", 0.0) or 0.0), reverse=reverse)
+        return [compact_scorecard_entry(item) for item in rows[:10]]
+
+    return {
+        "counts": dict(counts),
+        "quarantined": ranked("quarantined"),
+        "restricted": ranked("restricted"),
+        "preferred": ranked("preferred", reverse=True),
+    }
+
+
+def compact_scorecard_entry(entry: dict[str, object]) -> dict[str, object]:
+    return {
+        "instrument": entry.get("instrument"),
+        "status": entry.get("status"),
+        "threshold_adjustment": entry.get("threshold_adjustment"),
+        "reasons": entry.get("reasons") or [],
+        "closed_count": entry.get("closed_count"),
+        "win_rate": entry.get("win_rate"),
+        "profit_factor": entry.get("profit_factor"),
+        "net_pl": entry.get("net_pl"),
+    }
+
+
+def apply_instrument_scorecard_to_candidates(
+    candidates: list[dict[str, object]],
+    scorecard: dict[str, dict[str, object]],
+    args: argparse.Namespace,
+) -> None:
+    for candidate in candidates:
+        if str(candidate.get("action") or "").lower() == "close":
+            continue
+        instrument = str(candidate.get("instrument") or "")
+        entry = scorecard.get(instrument) if isinstance(scorecard, dict) else None
+        candidate["required_score"] = required_submit_score(instrument, args, scorecard)
+        if isinstance(entry, dict):
+            candidate["scorecard"] = compact_scorecard_entry(entry)
+            candidate["scorecard_status"] = entry.get("status")
+            candidate["scorecard_threshold_adjustment"] = entry.get("threshold_adjustment")
+            if entry.get("status") == "quarantined":
+                candidate["blocked_reason"] = "instrument_quarantine"
+                continue
+        if str(candidate.get("action") or "").lower() in {"buy", "sell"}:
+            score = float(candidate.get("score", 0.0) or 0.0)
+            if score < float(candidate.get("required_score", 0.0) or 0.0):
+                candidate["blocked_reason"] = "below_submit_threshold"
 
 
 def is_fx_pair(name: str) -> bool:
@@ -980,7 +1152,12 @@ def maybe_submit_candidates(
     for candidate in ordered_candidates:
         candidate_action = str(candidate.get("action") or "").lower()
         candidate_score = float(candidate.get("score", 0.0) or 0.0)
-        required_score = required_submit_score(str(candidate.get("instrument") or ""), args)
+        required_score = float(candidate.get("required_score") or required_submit_score(str(candidate.get("instrument") or ""), args))
+        scorecard = candidate.get("scorecard") if isinstance(candidate.get("scorecard"), dict) else {}
+        if candidate_action != "close" and scorecard.get("status") == "quarantined":
+            candidate["required_score"] = required_score
+            candidate["blocked_reason"] = "instrument_quarantine"
+            continue
         if candidate_action != "close" and non_liquid_trade_blocked(str(candidate.get("instrument") or ""), args):
             candidate["required_score"] = required_score
             candidate["blocked_reason"] = "non_liquid_trade_disabled"
@@ -1453,9 +1630,12 @@ def build_decision_summary(
 
     top = max(actionable, key=lambda item: float(item.get("score", 0.0) or 0.0))
     top_score = float(top.get("score", 0.0) or 0.0)
-    required_score = required_submit_score(str(top.get("instrument") or ""), args)
+    required_score = float(top.get("required_score") or required_submit_score(str(top.get("instrument") or ""), args))
     metadata = top.get("metadata") or {}
-    if non_liquid_trade_blocked(str(top.get("instrument") or ""), args):
+    scorecard = top.get("scorecard") if isinstance(top.get("scorecard"), dict) else {}
+    if scorecard.get("status") == "quarantined":
+        reason = "instrument_quarantine"
+    elif non_liquid_trade_blocked(str(top.get("instrument") or ""), args):
         reason = "non_liquid_trade_disabled"
     elif top_score < required_score:
         reason = "below_submit_threshold"
@@ -1479,10 +1659,17 @@ def build_decision_summary(
         "regime_score": metadata.get("regime_score"),
         "rsi": metadata.get("rsi"),
         "fib_retracement": metadata.get("fib_retracement"),
+        "scorecard_status": scorecard.get("status"),
+        "scorecard_threshold_adjustment": scorecard.get("threshold_adjustment"),
+        "scorecard_reasons": scorecard.get("reasons") or [],
     }
 
 
-def required_submit_score(instrument: str, args: argparse.Namespace) -> float:
+def required_submit_score(
+    instrument: str,
+    args: argparse.Namespace,
+    scorecard: dict[str, dict[str, object]] | None = None,
+) -> float:
     cls = instrument_class(instrument)
     if is_major_fx_pair(instrument):
         base = float(getattr(args, "min_submit_score", 0.0) or 0.0)
@@ -1499,7 +1686,10 @@ def required_submit_score(instrument: str, args: argparse.Namespace) -> float:
         base += float(getattr(args, "metal_submit_score_add", 0.35) or 0.0)
     elif cls == "commodity":
         base += float(getattr(args, "commodity_submit_score_add", 0.45) or 0.0)
-    return base
+    entry = scorecard.get(instrument) if isinstance(scorecard, dict) else None
+    if isinstance(entry, dict):
+        base += float(entry.get("threshold_adjustment", 0.0) or 0.0)
+    return max(0.0, base)
 
 
 def non_liquid_trade_blocked(instrument: str, args: argparse.Namespace) -> bool:
@@ -1783,6 +1973,7 @@ def write_audit_record(
         "candidates": candidates[:10],
         "submission": submission or None,
         "decision_summary": payload.get("decision_summary"),
+        "instrument_scorecard": payload.get("instrument_scorecard") or {},
         "spread_recheck": bool(payload.get("spread_recheck")),
         "spread_recheck_submitted_count": payload.get("spread_recheck_submitted_count"),
     }
@@ -1883,6 +2074,7 @@ def write_state_record(
         },
         "submission": payload.get("submission"),
         "decision_summary": payload.get("decision_summary"),
+        "instrument_scorecard": payload.get("instrument_scorecard") or {},
         "instrument_quality": (instrument_quality := update_instrument_quality(
             merge_instrument_quality(
                 previous_state.get("instrument_quality") or {},

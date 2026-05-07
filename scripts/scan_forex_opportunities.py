@@ -193,6 +193,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--currency-cooldown-minutes", type=int, default=60)
     parser.add_argument("--max-underlying-positions", type=int, default=1)
     parser.add_argument("--max-new-trades-per-underlying", type=int, default=1)
+    parser.add_argument("--max-correlated-positions", type=int, default=1)
+    parser.add_argument("--max-new-trades-per-correlated-group", type=int, default=1)
     parser.add_argument("--max-session-loss", type=float, default=1.0)
     parser.add_argument("--disable-adaptive-quality", action="store_true")
     parser.add_argument("--adaptive-min-atr-ratio", type=float, default=0.00012)
@@ -635,6 +637,15 @@ def exposure_group(instrument: str) -> str:
     return instrument
 
 
+def correlated_exposure_groups(instrument: str) -> set[str]:
+    instrument = str(instrument or "")
+    groups = {f"underlying:{exposure_group(instrument)}"}
+    currencies = instrument_currencies(instrument)
+    if currencies and is_fx_pair(instrument):
+        groups.update(f"currency:{currency}" for currency in currencies)
+    return groups
+
+
 def select_scan_instruments(
     tradeable: list[dict[str, object]],
     *,
@@ -1056,8 +1067,8 @@ def maybe_submit_candidates(
         projected_snapshot = engine.project_snapshot(projected_snapshot, action)
         if action.action != "close":
             new_entries_submitted += 1
-            group = exposure_group(action.instrument)
-            submitted_groups[group] = submitted_groups.get(group, 0) + 1
+            for group in correlated_exposure_groups(action.instrument):
+                submitted_groups[group] = submitted_groups.get(group, 0) + 1
             recent_entries.append(
                 {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1543,22 +1554,22 @@ def exposure_group_throttle_reason(
     submitted_groups: dict[str, int],
     args: argparse.Namespace,
 ) -> str | None:
-    group = exposure_group(instrument)
-    cls = instrument_class(instrument)
-    if cls not in {"metal", "commodity"}:
-        return None
-    max_existing = int(getattr(args, "max_underlying_positions", 1) or 0)
-    max_new = int(getattr(args, "max_new_trades_per_underlying", 1) or 0)
-    if max_existing > 0:
-        existing = sum(
-            1
-            for name, units in (positions_by_instrument or {}).items()
-            if units and exposure_group(str(name)) == group
-        )
-        if existing >= max_existing:
-            return "underlying_exposure_limit"
-    if max_new > 0 and submitted_groups.get(group, 0) >= max_new:
-        return "underlying_new_trade_limit"
+    groups = correlated_exposure_groups(instrument)
+    max_existing = int(getattr(args, "max_correlated_positions", 1) or 0)
+    max_new = int(getattr(args, "max_new_trades_per_correlated_group", 1) or 0)
+    if max_existing > 0 and groups:
+        for group in groups:
+            existing = sum(
+                1
+                for name, units in (positions_by_instrument or {}).items()
+                if units and group in correlated_exposure_groups(str(name))
+            )
+            if existing >= max_existing:
+                return "correlated_exposure_limit"
+    if max_new > 0:
+        for group in groups:
+            if submitted_groups.get(group, 0) >= max_new:
+                return "correlated_new_trade_limit"
     return None
 
 
@@ -1567,15 +1578,17 @@ def build_underlying_exposure_prune_candidates(
     instrument_quality: dict[str, object],
     args: argparse.Namespace,
 ) -> list[dict[str, object]]:
-    max_existing = int(getattr(args, "max_underlying_positions", 1) or 0)
+    max_existing = int(getattr(args, "max_correlated_positions", 1) or 0)
     if max_existing <= 0:
         return []
     grouped: dict[str, list[tuple[str, float]]] = {}
     for instrument, units in (positions_by_instrument or {}).items():
-        if not units or instrument_class(str(instrument)) not in {"metal", "commodity"}:
+        if not units:
             continue
-        grouped.setdefault(exposure_group(str(instrument)), []).append((str(instrument), float(units)))
+        for group in correlated_exposure_groups(str(instrument)):
+            grouped.setdefault(group, []).append((str(instrument), float(units)))
 
+    to_close: dict[str, dict[str, object]] = {}
     candidates: list[dict[str, object]] = []
     for group, positions in grouped.items():
         if len(positions) <= max_existing:
@@ -1587,24 +1600,29 @@ def build_underlying_exposure_prune_candidates(
         )
         keep = {instrument for instrument, _units in ranked[:max_existing]}
         for instrument, units in ranked[max_existing:]:
-            candidates.append(
+            record = to_close.setdefault(
+                instrument,
                 {
                     "instrument": instrument,
                     "action": "close",
                     "kind": "exit",
-                    "reason": "underlying_exposure_prune",
+                    "reason": "correlated_exposure_prune",
                     "score": 0.95,
                     "confidence": 0.6,
                     "units": abs(units),
                     "instrument_class": instrument_class(instrument),
                     "metadata": {
-                        "exposure_group": group,
-                        "kept_instruments": sorted(keep),
+                        "exposure_groups": [],
+                        "kept_instruments": [],
                         "keep_score": exposure_keep_score(instrument, instrument_quality),
                     },
-                }
+                },
             )
-    return candidates
+            metadata = record["metadata"]
+            metadata["exposure_groups"] = sorted(set(metadata["exposure_groups"]) | {group})
+            metadata["kept_instruments"] = sorted(set(metadata["kept_instruments"]) | keep)
+    candidates.extend(to_close.values())
+    return sorted(candidates, key=lambda item: exposure_keep_score(str(item["instrument"]), instrument_quality))
 
 
 def exposure_keep_score(instrument: str, instrument_quality: dict[str, object]) -> float:

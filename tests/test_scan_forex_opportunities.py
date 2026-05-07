@@ -15,6 +15,7 @@ from scripts.scan_forex_opportunities import (
     build_decision_summary,
     build_underlying_exposure_prune_candidates,
     build_trade_action,
+    correlated_exposure_groups,
     describe_exception,
     entry_throttle_reason,
     exposure_group,
@@ -694,10 +695,12 @@ def test_exposure_group_collapses_metal_crosses() -> None:
     assert exposure_group("WTICO_USD") == "OIL"
     assert exposure_group("BCO_USD") == "OIL"
     assert exposure_group("EUR_USD") == "EUR_USD"
+    assert correlated_exposure_groups("USD_JPY") == {"underlying:USD_JPY", "currency:USD", "currency:JPY"}
+    assert correlated_exposure_groups("XAU_HKD") == {"underlying:XAU"}
 
 
 def test_exposure_group_throttle_limits_existing_gold_exposure() -> None:
-    args = SimpleNamespace(max_underlying_positions=1, max_new_trades_per_underlying=1)
+    args = SimpleNamespace(max_correlated_positions=1, max_new_trades_per_correlated_group=1)
 
     reason = exposure_group_throttle_reason(
         "XAU_HKD",
@@ -706,7 +709,20 @@ def test_exposure_group_throttle_limits_existing_gold_exposure() -> None:
         args,
     )
 
-    assert reason == "underlying_exposure_limit"
+    assert reason == "correlated_exposure_limit"
+
+
+def test_exposure_group_throttle_limits_existing_currency_exposure() -> None:
+    args = SimpleNamespace(max_correlated_positions=1, max_new_trades_per_correlated_group=1)
+
+    reason = exposure_group_throttle_reason(
+        "EUR_JPY",
+        {"USD_JPY": -100},
+        {},
+        args,
+    )
+
+    assert reason == "correlated_exposure_limit"
 
 
 def test_decision_summary_reports_below_threshold() -> None:
@@ -910,6 +926,8 @@ def test_submit_candidates_takes_best_metal_underlying_only(monkeypatch, tmp_pat
         currency_cooldown_minutes=0,
         max_underlying_positions=1,
         max_new_trades_per_underlying=1,
+        max_correlated_positions=1,
+        max_new_trades_per_correlated_group=1,
         max_session_loss=1000,
         state_path=str(tmp_path / "state.json"),
         disable_live_spread_guard=True,
@@ -947,11 +965,11 @@ def test_submit_candidates_takes_best_metal_underlying_only(monkeypatch, tmp_pat
     )
 
     assert [item["instrument"] for item in submissions] == ["XAU_EUR"]
-    assert candidates[1]["blocked_reason"] == "underlying_exposure_limit"
+    assert candidates[1]["blocked_reason"] == "correlated_exposure_limit"
 
 
 def test_underlying_prune_closes_weaker_duplicate_gold_positions() -> None:
-    args = SimpleNamespace(max_underlying_positions=1)
+    args = SimpleNamespace(max_correlated_positions=1)
     quality = {
         "XAU_GBP": {"net_pl": 4.0, "win_rate": 1.0, "profit_factor": 5.0, "closed_count": 3.0},
         "XAU_EUR": {"net_pl": -1.0, "win_rate": 0.0, "profit_factor": 0.0, "closed_count": 1.0},
@@ -964,7 +982,27 @@ def test_underlying_prune_closes_weaker_duplicate_gold_positions() -> None:
         args,
     )
 
-    assert [item["instrument"] for item in candidates] == ["XAU_HKD", "XAU_EUR"]
+    assert [item["instrument"] for item in candidates] == ["XAU_EUR", "XAU_HKD"]
     assert all(item["action"] == "close" for item in candidates)
-    assert all(item["reason"] == "underlying_exposure_prune" for item in candidates)
+    assert all(item["reason"] == "correlated_exposure_prune" for item in candidates)
     assert candidates[0]["metadata"]["kept_instruments"] == ["XAU_GBP"]
+
+
+def test_correlated_prune_closes_weaker_duplicate_jpy_positions() -> None:
+    args = SimpleNamespace(max_correlated_positions=1)
+    quality = {
+        "USD_JPY": {"net_pl": 2.0, "win_rate": 0.6, "profit_factor": 2.0, "closed_count": 5.0},
+        "EUR_JPY": {"net_pl": 0.5, "win_rate": 0.4, "profit_factor": 1.0, "closed_count": 3.0},
+        "HKD_JPY": {"net_pl": -0.2, "win_rate": 0.3, "profit_factor": 0.8, "closed_count": 2.0},
+    }
+
+    candidates = build_underlying_exposure_prune_candidates(
+        {"USD_JPY": -100, "EUR_JPY": -100, "HKD_JPY": -100, "XAG_AUD": 1},
+        quality,
+        args,
+    )
+
+    jpy_candidates = [item for item in candidates if item["instrument"] in {"EUR_JPY", "HKD_JPY"}]
+    assert [item["instrument"] for item in jpy_candidates] == ["HKD_JPY", "EUR_JPY"]
+    assert all("currency:JPY" in item["metadata"]["exposure_groups"] for item in jpy_candidates)
+    assert all(item["metadata"]["kept_instruments"] == ["USD_JPY"] for item in jpy_candidates)

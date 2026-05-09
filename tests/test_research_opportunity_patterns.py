@@ -19,6 +19,7 @@ def base_args(**overrides):
         "max_spread_atr_ratios": "0.65",
         "entry_extension_atrs": "1.35",
         "htf_min_agreements": "1",
+        "external_signal_modes": "rank",
         "higher_timeframe_agreement_bonus": 0.35,
         "higher_timeframe_conflict_penalty": 0.60,
         "higher_timeframe_max_score_bonus": 0.75,
@@ -83,7 +84,78 @@ def test_research_external_signal_conflict_can_block_candidate() -> None:
         signals,
         candle_time=datetime(2026, 5, 1, 10, 30, tzinfo=timezone.utc),
         args=SimpleNamespace(external_signal_max_age_minutes=240, external_signal_max_adjustment=0.75),
+        mode="block",
     )
 
     assert adjustment == -0.75
     assert candidate["blocked_reason"] == "external_signal_conflict"
+
+
+def test_research_external_signal_discount_lowers_required_score() -> None:
+    candidate = {
+        "instrument": "EUR_USD",
+        "action": "buy",
+        "score": 5.2,
+        "required_score": 5.4,
+        "metadata": {},
+    }
+    signals = {
+        "EUR_USD": [
+            {
+                "_timestamp": datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+                "source": "test",
+                "instrument": "EUR_USD",
+                "direction": "bullish",
+                "confidence": 1.0,
+            }
+        ]
+    }
+
+    adjustment = apply_research_external_signals(
+        candidate,
+        signals,
+        candle_time=datetime(2026, 5, 1, 10, 30, tzinfo=timezone.utc),
+        args=SimpleNamespace(
+            external_signal_max_age_minutes=240,
+            external_signal_max_adjustment=0.75,
+            external_signal_discount_threshold=0.55,
+            external_signal_threshold_discount=0.35,
+        ),
+        mode="discount",
+    )
+
+    assert adjustment == 0.75
+    assert candidate["required_score"] == 5.050000000000001
+    assert candidate["score"] == 5.95
+
+
+def test_research_external_signal_rank_mode_does_not_block_conflict() -> None:
+    candidate = {
+        "instrument": "EUR_USD",
+        "action": "buy",
+        "score": 5.7,
+        "required_score": 5.4,
+        "metadata": {},
+    }
+    signals = {
+        "EUR_USD": [
+            {
+                "_timestamp": datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+                "source": "test",
+                "instrument": "EUR_USD",
+                "direction": "bearish",
+                "confidence": 1.0,
+            }
+        ]
+    }
+
+    adjustment = apply_research_external_signals(
+        candidate,
+        signals,
+        candle_time=datetime(2026, 5, 1, 10, 30, tzinfo=timezone.utc),
+        args=SimpleNamespace(external_signal_max_age_minutes=240, external_signal_max_adjustment=0.75),
+        mode="rank",
+    )
+
+    assert adjustment == -0.75
+    assert "blocked_reason" not in candidate

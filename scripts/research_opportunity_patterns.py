@@ -86,8 +86,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--higher-timeframe-conflict-penalty", type=float, default=0.60)
     parser.add_argument("--higher-timeframe-max-score-bonus", type=float, default=0.75)
     parser.add_argument("--external-signals-path", default="")
+    parser.add_argument("--external-signal-modes", default="rank,block,discount")
     parser.add_argument("--external-signal-max-age-minutes", type=float, default=240.0)
     parser.add_argument("--external-signal-max-adjustment", type=float, default=0.75)
+    parser.add_argument("--external-signal-discount-threshold", type=float, default=0.55)
+    parser.add_argument("--external-signal-threshold-discount", type=float, default=0.35)
     parser.add_argument("--require-external-signal-alignment", action="store_true")
     parser.add_argument("--disable-entry-timing-confirmation", action="store_true")
     parser.add_argument("--disable-higher-timeframe-confirmation", action="store_true")
@@ -317,23 +320,28 @@ def replay_instrument(
                 sim_args,
             ),
         }
-        apply_instrument_scorecard_to_candidates([candidate], {}, sim_args)
-        apply_entry_timing_confirmation_to_candidates([candidate], sim_args)
-        if candidate.get("blocked_reason"):
-            increment(gate_counts, str(candidate["blocked_reason"]))
-            continue
+        candidate["required_score"] = required_submit_score(instrument, sim_args, {})
         if action.action not in {"buy", "sell"}:
             increment(gate_counts, "hold")
+            continue
+        external_signal_mode = str(config.get("external_signal_mode") or "rank").lower()
+        if external_signal_mode != "discount" and float(candidate.get("score", 0.0) or 0.0) < float(candidate.get("required_score", 0.0) or 0.0):
+            candidate["blocked_reason"] = "below_submit_threshold"
+            increment(gate_counts, str(candidate["blocked_reason"]))
             continue
         signal_adjustment = apply_research_external_signals(
             candidate,
             external_signals or {},
             candle_time=parse_ts(candle["time"]),
             args=args,
+            mode=external_signal_mode,
         )
         if signal_adjustment is None and bool(getattr(args, "require_external_signal_alignment", False)):
             increment(gate_counts, "external_signal_missing")
             continue
+        if external_signal_mode == "discount" and float(candidate.get("score", 0.0) or 0.0) < float(candidate.get("required_score", 0.0) or 0.0):
+            candidate["blocked_reason"] = "below_submit_threshold"
+        apply_entry_timing_confirmation_to_candidates([candidate], sim_args)
         if candidate.get("blocked_reason"):
             increment(gate_counts, str(candidate["blocked_reason"]))
             continue
@@ -393,6 +401,7 @@ def apply_research_external_signals(
     *,
     candle_time: datetime,
     args: argparse.Namespace,
+    mode: str = "rank",
 ) -> float | None:
     instrument = str(candidate.get("instrument") or "").upper()
     action = str(candidate.get("action") or "").lower()
@@ -405,6 +414,7 @@ def apply_research_external_signals(
     )
     if not signals:
         return None
+    mode_name = str(mode or "rank").lower()
     max_adjustment = max(0.0, float(getattr(args, "external_signal_max_adjustment", 0.75) or 0.0))
     if max_adjustment <= 0:
         return None
@@ -422,12 +432,20 @@ def apply_research_external_signals(
     candidate["pre_external_signal_score"] = candidate.get("score")
     candidate["external_signal_score_adjustment"] = adjustment
     candidate["external_signals"] = applied
-    candidate["score"] = max(0.0, float(candidate.get("score", 0.0) or 0.0) + adjustment)
+    if mode_name in {"rank", "block", "discount"}:
+        candidate["score"] = max(0.0, float(candidate.get("score", 0.0) or 0.0) + adjustment)
+    if mode_name == "discount" and adjustment >= float(getattr(args, "external_signal_discount_threshold", 0.55) or 0.55):
+        discount = abs(float(getattr(args, "external_signal_threshold_discount", 0.35) or 0.0))
+        candidate["pre_external_signal_required_score"] = candidate.get("required_score")
+        candidate["required_score"] = max(0.0, float(candidate.get("required_score", 0.0) or 0.0) - discount)
+        candidate["external_signal_threshold_discount"] = discount
     metadata = dict(candidate.get("metadata") or {})
     metadata["external_signal_score_adjustment"] = adjustment
     metadata["external_signals"] = applied
+    if candidate.get("external_signal_threshold_discount") is not None:
+        metadata["external_signal_threshold_discount"] = candidate["external_signal_threshold_discount"]
     candidate["metadata"] = metadata
-    if float(candidate["score"]) < float(candidate.get("required_score", 0.0) or 0.0):
+    if mode_name == "block" and float(candidate["score"]) < float(candidate.get("required_score", 0.0) or 0.0):
         candidate["blocked_reason"] = "external_signal_conflict"
     return adjustment
 
@@ -736,6 +754,7 @@ def iter_research_configs(args: argparse.Namespace):
         parse_float_csv(args.max_spread_atr_ratios),
         parse_float_csv(args.entry_extension_atrs),
         parse_int_csv(args.htf_min_agreements),
+        parse_csv(args.external_signal_modes),
         [True] if args.disable_entry_timing_confirmation else [False, True],
         [True] if args.disable_higher_timeframe_confirmation else [False, True],
     ):
@@ -747,6 +766,7 @@ def iter_research_configs(args: argparse.Namespace):
             spread_ratio,
             extension_atr,
             htf_min,
+            external_signal_mode,
             disable_timing,
             disable_htf,
         ) = values
@@ -761,6 +781,7 @@ def iter_research_configs(args: argparse.Namespace):
             "higher_timeframe_agreement_bonus": float(args.higher_timeframe_agreement_bonus),
             "higher_timeframe_conflict_penalty": float(args.higher_timeframe_conflict_penalty),
             "higher_timeframe_max_score_bonus": float(args.higher_timeframe_max_score_bonus),
+            "external_signal_mode": str(external_signal_mode).lower(),
             "disable_entry_timing_confirmation": disable_timing,
             "disable_higher_timeframe_confirmation": disable_htf,
         }

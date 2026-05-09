@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
     generated_at = datetime.now(timezone.utc).isoformat()
     signals: list[dict[str, Any]] = []
     signals.extend(normalize_manual_signals(config.get("manual") or [], generated_at))

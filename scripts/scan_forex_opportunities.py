@@ -820,7 +820,7 @@ def load_external_signals(args: argparse.Namespace) -> dict[str, list[dict[str, 
     if not path.exists():
         return {}
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
         return {}
     raw_signals = payload.get("signals") if isinstance(payload, dict) else payload

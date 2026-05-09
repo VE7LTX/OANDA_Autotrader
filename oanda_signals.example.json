@@ -1,0 +1,22 @@
+{
+  "signals": [
+    {
+      "source": "oanda_autochartist",
+      "instrument": "EUR_USD",
+      "direction": "bullish",
+      "confidence": 0.64,
+      "pattern": "Fibonacci pattern",
+      "reason": "Example only: OANDA Technical Analysis / Autochartist opportunity.",
+      "timestamp": "2026-05-09T00:00:00Z"
+    },
+    {
+      "source": "oanda_autochartist",
+      "symbol": "USD/JPY",
+      "target_price": "154.20",
+      "current_price": "155.00",
+      "quality": "72",
+      "pattern": "Key level",
+      "timestamp": "2026-05-09T00:00:00Z"
+    }
+  ]
+}

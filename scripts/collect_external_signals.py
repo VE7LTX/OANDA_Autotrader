@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from datetime import datetime, timezone
@@ -32,6 +33,7 @@ def main() -> None:
     generated_at = datetime.now(timezone.utc).isoformat()
     signals: list[dict[str, Any]] = []
     signals.extend(normalize_manual_signals(config.get("manual") or [], generated_at))
+    signals.extend(collect_oanda_signals(config.get("oanda") or [], generated_at))
     if not args.skip_polymarket:
         signals.extend(collect_polymarket_signals(config.get("polymarket") or [], generated_at, args.timeout))
 
@@ -53,6 +55,78 @@ def normalize_manual_signals(items: list[Any], generated_at: str) -> list[dict[s
         if signal.get("instrument") or signal.get("instruments"):
             signals.append(signal)
     return signals
+
+
+def collect_oanda_signals(items: list[Any], generated_at: str) -> list[dict[str, Any]]:
+    signals = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        path_value = item.get("path")
+        if path_value:
+            signals.extend(load_oanda_signal_file(Path(str(path_value)), item, generated_at))
+        else:
+            signal = normalize_oanda_signal(item, item, generated_at)
+            if signal is not None:
+                signals.append(signal)
+    return signals
+
+
+def load_oanda_signal_file(path: Path, defaults: dict[str, Any], generated_at: str) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    if path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    else:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+        rows = payload.get("signals") if isinstance(payload, dict) else payload
+        if not isinstance(rows, list):
+            rows = []
+    signals = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        signal = normalize_oanda_signal(row, defaults, generated_at)
+        if signal is not None:
+            signals.append(signal)
+    return signals
+
+
+def normalize_oanda_signal(row: dict[str, Any], defaults: dict[str, Any], generated_at: str) -> dict[str, Any] | None:
+    instrument = normalize_instrument(
+        first_present(row, "instrument", "symbol", "pair", "asset")
+        or first_present(defaults, "instrument", "symbol", "pair", "asset")
+    )
+    if not instrument:
+        return None
+    direction = normalize_direction(
+        first_present(row, "direction", "bias", "action", "signal", "side")
+        or first_present(defaults, "direction", "bias", "action", "signal", "side")
+    )
+    if not direction:
+        direction = direction_from_prices(row)
+    if not direction:
+        return None
+    confidence = normalize_confidence(
+        first_present(row, "confidence", "probability", "quality", "score")
+        or first_present(defaults, "confidence", "probability", "quality", "score")
+    )
+    timestamp = (
+        first_present(row, "timestamp", "time", "generated_at", "created_at")
+        or first_present(defaults, "timestamp", "time", "generated_at", "created_at")
+        or generated_at
+    )
+    return {
+        "source": str(first_present(row, "source") or defaults.get("source") or "oanda_autochartist"),
+        "instrument": instrument,
+        "direction": direction,
+        "confidence": confidence if confidence is not None else 0.5,
+        "pattern": first_present(row, "pattern", "formation", "type"),
+        "market": first_present(row, "market", "title", "name"),
+        "reason": first_present(row, "reason", "description", "comment") or defaults.get("reason") or "OANDA Technical Analysis / Autochartist signal.",
+        "timestamp": timestamp,
+    }
 
 
 def collect_polymarket_signals(items: list[Any], generated_at: str, timeout: float) -> list[dict[str, Any]]:
@@ -171,6 +245,56 @@ def safe_probability(value: Any) -> float | None:
     if 0.0 <= probability <= 1.0:
         return probability
     return None
+
+
+def first_present(source: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = source.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def normalize_instrument(value: Any) -> str:
+    text = str(value or "").strip().upper().replace("/", "_").replace("-", "_")
+    if len(text) == 6 and "_" not in text:
+        text = f"{text[:3]}_{text[3:]}"
+    return text
+
+
+def normalize_direction(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"buy", "long", "bull", "bullish", "up", "breakout_up", "resistance_break"}:
+        return "bullish"
+    if text in {"sell", "short", "bear", "bearish", "down", "breakout_down", "support_break"}:
+        return "bearish"
+    return ""
+
+
+def normalize_confidence(value: Any) -> float | None:
+    try:
+        number = float(str(value).strip().rstrip("%"))
+    except (TypeError, ValueError):
+        return None
+    if number > 1.0:
+        number /= 100.0
+    return max(0.0, min(1.0, number))
+
+
+def direction_from_prices(row: dict[str, Any]) -> str:
+    target = number_from_row(row, "target", "target_price", "forecast_price", "projected_price")
+    entry = number_from_row(row, "entry", "entry_price", "current_price", "price")
+    if target is None or entry is None or target == entry:
+        return ""
+    return "bullish" if target > entry else "bearish"
+
+
+def number_from_row(row: dict[str, Any], *keys: str) -> float | None:
+    value = first_present(row, *keys)
+    try:
+        return float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
 
 
 if __name__ == "__main__":

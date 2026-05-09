@@ -8,6 +8,13 @@
       "reason": "Example manual analyst/context signal."
     }
   ],
+  "oanda": [
+    {
+      "path": "data/oanda_signals.example.json",
+      "source": "oanda_autochartist",
+      "reason": "OANDA Technical Analysis / Autochartist alert."
+    }
+  ],
   "polymarket": [
     {
       "slug": "fed-decision-in-june",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from scripts.collect_external_signals import (
+    normalize_oanda_signal,
     parse_jsonish_list,
     polymarket_signal_from_probability,
     polymarket_yes_probability,
@@ -34,6 +35,27 @@ def test_polymarket_signal_uses_threshold_direction() -> None:
     assert signal["instrument"] == "EUR_USD"
     assert signal["direction"] == "bearish"
     assert signal["source"] == "polymarket"
+
+
+def test_normalize_oanda_signal_maps_symbol_direction_and_quality() -> None:
+    signal = normalize_oanda_signal(
+        {
+            "symbol": "USD/JPY",
+            "target_price": "154.20",
+            "current_price": "155.00",
+            "quality": "72",
+            "pattern": "Key level",
+            "timestamp": "2026-05-09T00:00:00Z",
+        },
+        {"source": "oanda_autochartist"},
+        "2026-05-09T01:00:00Z",
+    )
+
+    assert signal is not None
+    assert signal["instrument"] == "USD_JPY"
+    assert signal["direction"] == "bearish"
+    assert signal["confidence"] == 0.72
+    assert signal["pattern"] == "Key level"
 
 
 def test_parse_jsonish_list_rejects_invalid_json() -> None:

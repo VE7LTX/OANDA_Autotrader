@@ -53,6 +53,9 @@ python scripts\collect_external_signals.py --config external_signal_sources.exam
 The collector currently supports:
 
 - `manual`: copied into the output after normalization.
+- `oanda`: imports OANDA Technical Analysis / Autochartist alerts copied or
+  exported to JSON/CSV, then normalizes fields like instrument, direction,
+  confidence, pattern, target price, and timestamp.
 - `polymarket`: reads public Gamma event/market probabilities and maps them to
   instrument direction when a configured threshold is crossed.
 
@@ -60,7 +63,10 @@ The collector currently supports:
 
 - OANDA Technical Analysis: useful because it is broker-native and already
   focused on chart patterns, Fibonacci, support/resistance, and volatility.
-  Treat it as a confluence feed if alerts can be exported or entered manually.
+  Treat it as a confluence feed. OANDA describes this as Technical Analysis
+  powered by Autochartist inside OANDA Trade, not as a normal v20 trading API
+  endpoint, so this project imports exported/copied alerts rather than scraping
+  the trading platform.
 - Polymarket: useful for macro event probabilities, central-bank expectations,
   election/geopolitical risk, crypto sentiment, and risk-on/risk-off context.
   It is not a direct FX signal feed.
@@ -73,3 +79,30 @@ The collector currently supports:
 - Every provider must write normalized signals first, then be backtested against
   candle outcomes before being allowed into live practice mode.
 - Provider outages or stale signals should degrade to no adjustment.
+
+## OANDA Signal Import
+
+Put OANDA Technical Analysis / Autochartist alerts into JSON or CSV and point
+`external_signal_sources.example.json` at that file.
+
+JSON example:
+
+```json
+{
+  "signals": [
+    {
+      "source": "oanda_autochartist",
+      "instrument": "EUR_USD",
+      "direction": "bullish",
+      "confidence": 0.64,
+      "pattern": "Fibonacci pattern",
+      "timestamp": "2026-05-09T00:00:00Z"
+    }
+  ]
+}
+```
+
+CSV columns can use common names such as `instrument`, `symbol`, `direction`,
+`bias`, `confidence`, `quality`, `pattern`, `target_price`, `current_price`,
+and `timestamp`. If direction is missing, the collector infers bullish/bearish
+from `target_price` versus `current_price`.

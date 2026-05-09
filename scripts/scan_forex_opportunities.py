@@ -225,6 +225,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--higher-timeframe-agreement-bonus", type=float, default=0.35)
     parser.add_argument("--higher-timeframe-conflict-penalty", type=float, default=0.60)
     parser.add_argument("--higher-timeframe-max-score-bonus", type=float, default=0.75)
+    parser.add_argument("--disable-external-signals", action="store_true")
+    parser.add_argument("--external-signals-path", default="data/external_signals.json")
+    parser.add_argument("--external-signal-max-age-minutes", type=float, default=240.0)
+    parser.add_argument("--external-signal-max-adjustment", type=float, default=0.75)
     parser.add_argument("--disable-entry-timing-confirmation", action="store_true")
     parser.add_argument("--entry-timing-max-extension-atr", type=float, default=1.35)
     parser.add_argument("--entry-timing-buy-max-rsi", type=float, default=72.0)
@@ -314,6 +318,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         seeded_quality = fetch_transaction_quality_seed(account_client, app_config.account_id, summary, args)
         instrument_quality = merge_instrument_quality(instrument_quality, seeded_quality)
     instrument_scorecard = build_instrument_scorecard(instrument_quality, args)
+    external_signals = load_external_signals(args)
 
     entry_candidates = []
     held = {name for name, units in snapshot.positions_by_instrument.items() if units}
@@ -439,6 +444,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
             }
         )
     apply_instrument_scorecard_to_candidates(entry_candidates, instrument_scorecard, args)
+    apply_external_signals_to_candidates(entry_candidates, external_signals, args)
     apply_entry_timing_confirmation_to_candidates(entry_candidates, args)
     apply_higher_timeframe_confirmation_to_candidates(
         entry_candidates,
@@ -491,6 +497,7 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         "scan_errors": scan_errors,
         "instrument_quality_seed": seeded_quality,
         "instrument_scorecard": summarize_instrument_scorecard(instrument_scorecard),
+        "external_signals": summarize_external_signals(external_signals),
         "top_opportunities": candidates[: args.top],
         "submission": None,
     }
@@ -804,6 +811,139 @@ def apply_instrument_scorecard_to_candidates(
             score = float(candidate.get("score", 0.0) or 0.0)
             if score < float(candidate.get("required_score", 0.0) or 0.0):
                 candidate["blocked_reason"] = "below_submit_threshold"
+
+
+def load_external_signals(args: argparse.Namespace) -> dict[str, list[dict[str, object]]]:
+    if bool(getattr(args, "disable_external_signals", False)):
+        return {}
+    path = Path(str(getattr(args, "external_signals_path", "data/external_signals.json") or ""))
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    raw_signals = payload.get("signals") if isinstance(payload, dict) else payload
+    if not isinstance(raw_signals, list):
+        return {}
+    max_age_minutes = float(getattr(args, "external_signal_max_age_minutes", 240.0) or 0.0)
+    now = datetime.now(timezone.utc)
+    by_instrument: dict[str, list[dict[str, object]]] = {}
+    for raw in raw_signals:
+        if not isinstance(raw, dict):
+            continue
+        timestamp = parse_signal_timestamp(raw.get("timestamp") or raw.get("generated_at") or (payload.get("generated_at") if isinstance(payload, dict) else None))
+        if timestamp is not None and max_age_minutes > 0:
+            age_minutes = (now - timestamp).total_seconds() / 60.0
+            if age_minutes > max_age_minutes:
+                continue
+        instruments = raw.get("instruments")
+        if isinstance(instruments, str):
+            names = [instruments]
+        elif isinstance(instruments, list):
+            names = [str(item) for item in instruments]
+        else:
+            names = [str(raw.get("instrument") or "")]
+        for name in names:
+            instrument = str(name or "").strip().upper()
+            if not instrument:
+                continue
+            signal = dict(raw)
+            signal["instrument"] = instrument
+            if timestamp is not None:
+                signal["timestamp"] = timestamp.isoformat()
+            by_instrument.setdefault(instrument, []).append(signal)
+    return by_instrument
+
+
+def apply_external_signals_to_candidates(
+    candidates: list[dict[str, object]],
+    signals_by_instrument: dict[str, list[dict[str, object]]],
+    args: argparse.Namespace,
+) -> None:
+    if not signals_by_instrument:
+        return
+    max_adjustment = max(0.0, float(getattr(args, "external_signal_max_adjustment", 0.75) or 0.0))
+    if max_adjustment <= 0:
+        return
+    for candidate in candidates:
+        if candidate.get("blocked_reason"):
+            continue
+        action = str(candidate.get("action") or "").lower()
+        if action not in {"buy", "sell"}:
+            continue
+        instrument = str(candidate.get("instrument") or "").upper()
+        signals = signals_by_instrument.get(instrument) or []
+        if not signals:
+            continue
+        adjustment = 0.0
+        applied: list[dict[str, object]] = []
+        for signal in signals:
+            signal_adjustment = external_signal_adjustment(signal, action, max_adjustment)
+            if signal_adjustment == 0:
+                continue
+            adjustment += signal_adjustment
+            applied.append(compact_external_signal(signal, signal_adjustment))
+        adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
+        if not applied or adjustment == 0:
+            continue
+        candidate["pre_external_signal_score"] = candidate.get("score")
+        candidate["external_signal_score_adjustment"] = adjustment
+        candidate["external_signals"] = applied
+        candidate["score"] = max(0.0, float(candidate.get("score", 0.0) or 0.0) + adjustment)
+        metadata = dict(candidate.get("metadata") or {})
+        metadata["external_signal_score_adjustment"] = adjustment
+        metadata["external_signals"] = applied
+        candidate["metadata"] = metadata
+
+
+def external_signal_adjustment(signal: dict[str, object], action: str, max_adjustment: float) -> float:
+    direction = normalize_signal_direction(signal.get("direction") or signal.get("action") or signal.get("bias"))
+    if direction not in {"buy", "sell"}:
+        return 0.0
+    explicit = _safe_number(signal.get("score_adjustment"))
+    confidence = _safe_number(signal.get("confidence"))
+    if explicit is None:
+        explicit = max_adjustment * max(0.0, min(1.0, confidence if confidence is not None else 0.5))
+    amount = min(max_adjustment, abs(float(explicit)))
+    return amount if direction == action else -amount
+
+
+def normalize_signal_direction(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"buy", "long", "bull", "bullish", "risk_on", "risk-on"}:
+        return "buy"
+    if text in {"sell", "short", "bear", "bearish", "risk_off", "risk-off"}:
+        return "sell"
+    return text
+
+
+def compact_external_signal(signal: dict[str, object], adjustment: float) -> dict[str, object]:
+    return {
+        "source": signal.get("source"),
+        "direction": normalize_signal_direction(signal.get("direction") or signal.get("action") or signal.get("bias")),
+        "confidence": signal.get("confidence"),
+        "score_adjustment": adjustment,
+        "reason": signal.get("reason") or signal.get("title") or signal.get("market"),
+        "timestamp": signal.get("timestamp"),
+    }
+
+
+def summarize_external_signals(signals_by_instrument: dict[str, list[dict[str, object]]]) -> dict[str, object]:
+    return {
+        "instrument_count": len(signals_by_instrument),
+        "signal_count": sum(len(items) for items in signals_by_instrument.values()),
+        "instruments": sorted(signals_by_instrument)[:25],
+    }
+
+
+def parse_signal_timestamp(value: object) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def evaluate_entry_timing_confirmation(

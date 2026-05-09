@@ -13,6 +13,7 @@ from scripts.scan_forex_opportunities import (
     apply_live_spread_guard,
     apply_adaptive_quality,
     apply_entry_timing_confirmation_to_candidates,
+    apply_external_signals_to_candidates,
     apply_instrument_scorecard_to_candidates,
     build_decision_summary,
     build_instrument_scorecard,
@@ -22,6 +23,7 @@ from scripts.scan_forex_opportunities import (
     describe_exception,
     entry_throttle_reason,
     evaluate_entry_timing_confirmation,
+    external_signal_adjustment,
     exposure_group,
     exposure_group_throttle_reason,
     fetch_candles_safe,
@@ -222,6 +224,34 @@ def test_higher_timeframe_confirmation_boosts_aligned_candidate(monkeypatch) -> 
     assert candidates[0]["higher_timeframe_confirmation"]["agreements"] == 2
     assert candidates[0]["higher_timeframe_score_adjustment"] == 0.7
     assert candidates[0]["score"] == 6.5
+
+
+def test_external_signal_adjustment_matches_or_penalizes_direction() -> None:
+    signal = {"direction": "bullish", "confidence": 0.8}
+
+    assert external_signal_adjustment(signal, "buy", 0.75) == 0.6000000000000001
+    assert external_signal_adjustment(signal, "sell", 0.75) == -0.6000000000000001
+
+
+def test_external_signals_adjust_only_unblocked_entry_candidates() -> None:
+    candidates = [
+        {"instrument": "EUR_USD", "action": "buy", "score": 5.7, "metadata": {}},
+        {"instrument": "GBP_USD", "action": "sell", "score": 5.2, "metadata": {}, "blocked_reason": "below_submit_threshold"},
+    ]
+    signals = {
+        "EUR_USD": [{"source": "manual", "direction": "bullish", "confidence": 0.8, "reason": "macro"}],
+        "GBP_USD": [{"source": "manual", "direction": "bearish", "confidence": 1.0, "reason": "macro"}],
+    }
+
+    apply_external_signals_to_candidates(
+        candidates,
+        signals,
+        SimpleNamespace(external_signal_max_adjustment=0.75),
+    )
+
+    assert candidates[0]["score"] == 6.300000000000001
+    assert candidates[0]["external_signal_score_adjustment"] == 0.6000000000000001
+    assert "external_signal_score_adjustment" not in candidates[1]
 
 
 def test_entry_timing_confirmation_blocks_buy_without_confirming_close() -> None:

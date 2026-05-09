@@ -1,0 +1,34 @@
+{
+  "manual": [
+    {
+      "source": "manual",
+      "instrument": "EUR_USD",
+      "direction": "bullish",
+      "confidence": 0.55,
+      "reason": "Example manual analyst/context signal."
+    }
+  ],
+  "polymarket": [
+    {
+      "slug": "fed-decision-in-june",
+      "kind": "event",
+      "instrument": "EUR_USD",
+      "yes_direction": "bearish",
+      "no_direction": "bullish",
+      "threshold": 0.58,
+      "reason": "Example only: high Fed-hawkish probability can favor USD."
+    }
+  ],
+  "santiment": [
+    {
+      "slug": "bitcoin",
+      "metric": "social_volume_total",
+      "instrument": "XAU_USD",
+      "rising_direction": "bullish",
+      "falling_direction": "bearish",
+      "interval": "1h",
+      "lookback_hours": 24,
+      "reason": "Example only: crypto social risk appetite proxy."
+    }
+  ]
+}

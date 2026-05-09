@@ -55,8 +55,6 @@ The collector currently supports:
 - `manual`: copied into the output after normalization.
 - `polymarket`: reads public Gamma event/market probabilities and maps them to
   instrument direction when a configured threshold is crossed.
-- `santiment`: reads GraphQL metrics when `SANTIMENT_API_KEY` or `SANAPI_KEY`
-  is present, then maps large metric changes to configured direction.
 
 ## Candidate Sources
 
@@ -66,9 +64,6 @@ The collector currently supports:
 - Polymarket: useful for macro event probabilities, central-bank expectations,
   election/geopolitical risk, crypto sentiment, and risk-on/risk-off context.
   It is not a direct FX signal feed.
-- Santiment: useful for crypto and social/on-chain risk proxies. It is most
-  relevant to crypto-linked sentiment and broader speculative appetite, not
-  direct CAD/JPY/EUR signals.
 
 ## Research Rules
 

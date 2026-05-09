@@ -18,17 +18,5 @@
       "threshold": 0.58,
       "reason": "Example only: high Fed-hawkish probability can favor USD."
     }
-  ],
-  "santiment": [
-    {
-      "slug": "bitcoin",
-      "metric": "social_volume_total",
-      "instrument": "XAU_USD",
-      "rising_direction": "bullish",
-      "falling_direction": "bearish",
-      "interval": "1h",
-      "lookback_hours": 24,
-      "reason": "Example only: crypto social risk appetite proxy."
-    }
   ]
 }

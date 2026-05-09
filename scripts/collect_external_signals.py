@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +15,6 @@ if str(ROOT) not in sys.path:
 
 
 POLYMARKET_GAMMA = "https://gamma-api.polymarket.com"
-SANTIMENT_GRAPHQL = "https://api.santiment.net/graphql"
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,7 +23,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="data/external_signals.json")
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--skip-polymarket", action="store_true")
-    parser.add_argument("--skip-santiment", action="store_true")
     return parser.parse_args()
 
 
@@ -37,8 +34,6 @@ def main() -> None:
     signals.extend(normalize_manual_signals(config.get("manual") or [], generated_at))
     if not args.skip_polymarket:
         signals.extend(collect_polymarket_signals(config.get("polymarket") or [], generated_at, args.timeout))
-    if not args.skip_santiment:
-        signals.extend(collect_santiment_signals(config.get("santiment") or [], generated_at, args.timeout))
 
     payload = {"generated_at": generated_at, "signals": signals}
     output = Path(args.output)
@@ -145,86 +140,6 @@ def polymarket_yes_probability(market: dict[str, Any]) -> float | None:
     return None
 
 
-def collect_santiment_signals(items: list[Any], generated_at: str, timeout: float) -> list[dict[str, Any]]:
-    token = os.getenv("SANTIMENT_API_KEY") or os.getenv("SANAPI_KEY")
-    if not token:
-        return []
-    signals = []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        try:
-            points = fetch_santiment_metric(item, token, timeout)
-        except requests.RequestException as exc:
-            signals.append(error_signal("santiment", str(item.get("instrument") or "").upper(), generated_at, item.get("metric"), exc))
-            continue
-        signal = santiment_signal_from_points(item, points, generated_at)
-        if signal is not None:
-            signals.append(signal)
-    return signals
-
-
-def fetch_santiment_metric(config: dict[str, Any], token: str, timeout: float) -> list[dict[str, Any]]:
-    lookback_hours = int(config.get("lookback_hours", 24) or 24)
-    to_time = datetime.now(timezone.utc)
-    from_time = to_time - timedelta(hours=max(2, lookback_hours))
-    query = """
-    query($metric: String!, $slug: String!, $from: DateTime!, $to: DateTime!, $interval: interval!) {
-      getMetric(metric: $metric) {
-        timeseriesDataJson(selector: { slug: $slug }, from: $from, to: $to, interval: $interval)
-      }
-    }
-    """
-    variables = {
-        "metric": str(config.get("metric") or "social_volume_total"),
-        "slug": str(config.get("slug") or ""),
-        "from": from_time.isoformat(),
-        "to": to_time.isoformat(),
-        "interval": str(config.get("interval") or "1h"),
-    }
-    response = requests.post(
-        SANTIMENT_GRAPHQL,
-        headers={"Authorization": f"Apikey {token}"},
-        json={"query": query, "variables": variables},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    payload = response.json()
-    rows = (((payload.get("data") or {}).get("getMetric") or {}).get("timeseriesDataJson") or [])
-    return rows if isinstance(rows, list) else []
-
-
-def santiment_signal_from_points(
-    config: dict[str, Any],
-    points: list[dict[str, Any]],
-    generated_at: str,
-) -> dict[str, Any] | None:
-    values = [float(row["value"]) for row in points if isinstance(row, dict) and is_number(row.get("value"))]
-    if len(values) < 3:
-        return None
-    previous = sum(values[:-1]) / max(1, len(values) - 1)
-    latest = values[-1]
-    if previous <= 0:
-        return None
-    change = (latest - previous) / previous
-    threshold = abs(float(config.get("change_threshold", 0.15) or 0.15))
-    if abs(change) < threshold:
-        return None
-    direction = config.get("rising_direction") if change > 0 else config.get("falling_direction")
-    if not direction:
-        return None
-    return {
-        "source": "santiment",
-        "instrument": str(config.get("instrument") or "").upper(),
-        "direction": direction,
-        "confidence": min(1.0, abs(change)),
-        "metric": config.get("metric"),
-        "asset": config.get("slug"),
-        "reason": config.get("reason") or "Santiment metric changed beyond threshold.",
-        "timestamp": generated_at,
-    }
-
-
 def error_signal(source: str, instrument: str, generated_at: str, label: Any, exc: Exception) -> dict[str, Any]:
     return {
         "source": source,
@@ -256,14 +171,6 @@ def safe_probability(value: Any) -> float | None:
     if 0.0 <= probability <= 1.0:
         return probability
     return None
-
-
-def is_number(value: Any) -> bool:
-    try:
-        float(value)
-    except (TypeError, ValueError):
-        return False
-    return True
 
 
 if __name__ == "__main__":

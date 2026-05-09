@@ -28,7 +28,7 @@ from oanda_autotrader.execution import (
     TradeAction,
     snapshot_from_account_payload,
 )
-from oanda_autotrader.indicators import atr
+from oanda_autotrader.indicators import atr, extract_closes
 from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover
 
 
@@ -217,6 +217,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scorecard-good-win-rate", type=float, default=0.55)
     parser.add_argument("--scorecard-max-threshold-add", type=float, default=1.25)
     parser.add_argument("--scorecard-max-threshold-discount", type=float, default=0.25)
+    parser.add_argument("--disable-higher-timeframe-confirmation", action="store_true")
+    parser.add_argument("--higher-timeframe-granularities", default="M15,H1")
+    parser.add_argument("--higher-timeframe-count", type=int, default=120)
+    parser.add_argument("--higher-timeframe-min-agreements", type=int, default=1)
+    parser.add_argument("--allow-higher-timeframe-conflicts", action="store_true")
+    parser.add_argument("--higher-timeframe-agreement-bonus", type=float, default=0.35)
+    parser.add_argument("--higher-timeframe-conflict-penalty", type=float, default=0.60)
+    parser.add_argument("--higher-timeframe-max-score-bonus", type=float, default=0.75)
+    parser.add_argument("--disable-entry-timing-confirmation", action="store_true")
+    parser.add_argument("--entry-timing-max-extension-atr", type=float, default=1.35)
+    parser.add_argument("--entry-timing-buy-max-rsi", type=float, default=72.0)
+    parser.add_argument("--entry-timing-sell-min-rsi", type=float, default=28.0)
     parser.add_argument("--disable-live-spread-guard", action="store_true")
     parser.add_argument("--max-spread-atr-ratio", type=float, default=0.65)
     parser.add_argument("--disable-adaptive-spread-guard", action="store_true")
@@ -396,6 +408,14 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
         metadata["atr_ratio"] = quality.get("atr_ratio")
         metadata["quality_penalty"] = quality.get("penalty")
         metadata["quality_reasons"] = quality.get("reasons")
+        timing = evaluate_entry_timing_confirmation(
+            action.action,
+            candles,
+            metadata,
+            latest_atr,
+            args,
+        )
+        metadata["entry_timing_confirmation"] = timing
         entry_candidates.append(
             {
                 "instrument": instrument,
@@ -414,10 +434,21 @@ def run_scan_cycle(args: argparse.Namespace, *, cycle: int) -> None:
                 "atr_ratio": quality.get("atr_ratio"),
                 "quality_penalty": quality.get("penalty"),
                 "quality_reasons": quality.get("reasons"),
+                "entry_timing_confirmation": timing,
                 "has_position": instrument in held,
             }
         )
     apply_instrument_scorecard_to_candidates(entry_candidates, instrument_scorecard, args)
+    apply_entry_timing_confirmation_to_candidates(entry_candidates, args)
+    apply_higher_timeframe_confirmation_to_candidates(
+        entry_candidates,
+        instruments_client=instruments_client,
+        snapshot=snapshot,
+        base_strategy=strategy,
+        price_precisions=price_precisions,
+        args=args,
+        scan_errors=scan_errors,
+    )
 
     if args.manage_exits and held:
         managed_actions.extend(
@@ -773,6 +804,270 @@ def apply_instrument_scorecard_to_candidates(
             score = float(candidate.get("score", 0.0) or 0.0)
             if score < float(candidate.get("required_score", 0.0) or 0.0):
                 candidate["blocked_reason"] = "below_submit_threshold"
+
+
+def evaluate_entry_timing_confirmation(
+    action: str,
+    candles: list[dict],
+    metadata: dict[str, object],
+    latest_atr: float | None,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    action_name = str(action or "").lower()
+    if action_name not in {"buy", "sell"}:
+        return {"confirmed": True, "reason": "not_entry"}
+    closes = extract_closes(candles)
+    if len(closes) < 3:
+        return {"confirmed": False, "reason": "insufficient_closes", "details": []}
+    latest_close = closes[-1]
+    previous_close = closes[-2]
+    try:
+        fast_ma = float(metadata.get("fast_ma"))
+        slow_ma = float(metadata.get("slow_ma"))
+    except (TypeError, ValueError):
+        return {"confirmed": False, "reason": "missing_moving_averages", "details": []}
+    latest_rsi = _safe_number(metadata.get("rsi"))
+    atr_value = float(latest_atr or 0.0)
+    max_extension_atr = abs(float(getattr(args, "entry_timing_max_extension_atr", 1.35) or 1.35))
+    buy_max_rsi = float(getattr(args, "entry_timing_buy_max_rsi", 72.0) or 72.0)
+    sell_min_rsi = float(getattr(args, "entry_timing_sell_min_rsi", 28.0) or 28.0)
+
+    details: list[str] = []
+    extension_atr = abs(latest_close - fast_ma) / atr_value if atr_value > 0 else None
+    if extension_atr is not None and max_extension_atr > 0 and extension_atr > max_extension_atr:
+        details.append("overextended_from_fast_ma")
+
+    if action_name == "buy":
+        if fast_ma <= slow_ma:
+            details.append("m5_trend_not_aligned")
+        if latest_close < fast_ma:
+            details.append("fast_ma_not_reclaimed")
+        if latest_close <= previous_close:
+            details.append("no_confirming_up_close")
+        if latest_rsi is not None and latest_rsi > buy_max_rsi:
+            details.append("overbought_chase")
+    else:
+        if fast_ma >= slow_ma:
+            details.append("m5_trend_not_aligned")
+        if latest_close > fast_ma:
+            details.append("fast_ma_not_rejected")
+        if latest_close >= previous_close:
+            details.append("no_confirming_down_close")
+        if latest_rsi is not None and latest_rsi < sell_min_rsi:
+            details.append("oversold_chase")
+
+    return {
+        "confirmed": not details,
+        "reason": "confirmed" if not details else "entry_timing_not_confirmed",
+        "details": details,
+        "latest_close": latest_close,
+        "previous_close": previous_close,
+        "fast_ma": fast_ma,
+        "slow_ma": slow_ma,
+        "rsi": latest_rsi,
+        "extension_atr": extension_atr,
+        "max_extension_atr": max_extension_atr,
+    }
+
+
+def apply_entry_timing_confirmation_to_candidates(
+    candidates: list[dict[str, object]],
+    args: argparse.Namespace,
+) -> None:
+    if bool(getattr(args, "disable_entry_timing_confirmation", False)):
+        return
+    for candidate in candidates:
+        action = str(candidate.get("action") or "").lower()
+        if action not in {"buy", "sell"}:
+            continue
+        if candidate.get("blocked_reason"):
+            continue
+        score = float(candidate.get("score", 0.0) or 0.0)
+        required_score = float(candidate.get("required_score", 0.0) or 0.0)
+        if score < required_score:
+            continue
+        timing = candidate.get("entry_timing_confirmation")
+        if not isinstance(timing, dict):
+            continue
+        if not timing.get("confirmed"):
+            candidate["blocked_reason"] = "entry_timing_not_confirmed"
+
+
+def parse_higher_timeframe_granularities(args: argparse.Namespace) -> list[str]:
+    raw = str(getattr(args, "higher_timeframe_granularities", "M15,H1") or "")
+    return [item.strip().upper() for item in raw.split(",") if item.strip()]
+
+
+def apply_higher_timeframe_confirmation_to_candidates(
+    candidates: list[dict[str, object]],
+    *,
+    instruments_client,
+    snapshot,
+    base_strategy: StrategyConfig,
+    price_precisions: dict[str, int] | None,
+    args: argparse.Namespace,
+    scan_errors: list[dict[str, object]] | None = None,
+) -> None:
+    if bool(getattr(args, "disable_higher_timeframe_confirmation", False)):
+        return
+    granularities = parse_higher_timeframe_granularities(args)
+    if not granularities:
+        return
+    for candidate in candidates:
+        action = str(candidate.get("action") or "").lower()
+        if action not in {"buy", "sell"}:
+            continue
+        if candidate.get("blocked_reason"):
+            continue
+        score = float(candidate.get("score", 0.0) or 0.0)
+        required_score = float(candidate.get("required_score", 0.0) or 0.0)
+        if score < required_score:
+            continue
+        confirmation = evaluate_higher_timeframe_confirmation(
+            candidate,
+            instruments_client=instruments_client,
+            snapshot=snapshot,
+            base_strategy=base_strategy,
+            price_precisions=price_precisions or {},
+            granularities=granularities,
+            args=args,
+            scan_errors=scan_errors,
+        )
+        candidate["higher_timeframe_confirmation"] = confirmation
+        adjustment = higher_timeframe_score_adjustment(confirmation, args)
+        if adjustment:
+            candidate["pre_higher_timeframe_score"] = candidate.get("score")
+            candidate["score"] = max(0.0, score + adjustment)
+            candidate["higher_timeframe_score_adjustment"] = adjustment
+        metadata = dict(candidate.get("metadata") or {})
+        metadata["higher_timeframe_confirmation"] = confirmation
+        metadata["higher_timeframe_score_adjustment"] = adjustment
+        candidate["metadata"] = metadata
+        if not confirmation.get("confirmed"):
+            candidate["blocked_reason"] = "higher_timeframe_not_confirmed"
+
+
+def evaluate_higher_timeframe_confirmation(
+    candidate: dict[str, object],
+    *,
+    instruments_client,
+    snapshot,
+    base_strategy: StrategyConfig,
+    price_precisions: dict[str, int],
+    granularities: list[str],
+    args: argparse.Namespace,
+    scan_errors: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    instrument = str(candidate.get("instrument") or "")
+    desired_action = str(candidate.get("action") or "").lower()
+    rows: list[dict[str, object]] = []
+    agreements = 0
+    conflicts = 0
+    missing = 0
+    count = max(30, int(getattr(args, "higher_timeframe_count", 120) or 120))
+    for granularity in granularities:
+        payload = fetch_candles_safe(
+            instruments_client,
+            instrument,
+            granularity=granularity,
+            count=count,
+            errors=scan_errors,
+        )
+        if payload is None:
+            missing += 1
+            rows.append({"granularity": granularity, "direction": "missing", "reason": "missing_candles"})
+            continue
+        candles = payload.get("candles", [])
+        if not candles:
+            missing += 1
+            rows.append({"granularity": granularity, "direction": "missing", "reason": "empty_candles"})
+            continue
+        strategy = StrategyConfig(
+            instrument=instrument,
+            fast_window=base_strategy.fast_window,
+            slow_window=base_strategy.slow_window,
+            units=base_strategy.units,
+            min_separation=base_strategy.min_separation,
+            atr_period=base_strategy.atr_period,
+            atr_stop_multiple=base_strategy.atr_stop_multiple,
+            atr_target_multiple=base_strategy.atr_target_multiple,
+            min_risk_reward_ratio=base_strategy.min_risk_reward_ratio,
+            risk_per_trade_fraction=base_strategy.risk_per_trade_fraction,
+            long_score_threshold=base_strategy.long_score_threshold,
+            short_score_threshold=base_strategy.short_score_threshold,
+            regime_score_threshold=base_strategy.regime_score_threshold,
+            trailing_atr_multiple=base_strategy.trailing_atr_multiple,
+            max_hold_candles=base_strategy.max_hold_candles,
+            break_even_atr_multiple=base_strategy.break_even_atr_multiple,
+            price_precision=price_precisions.get(instrument),
+        )
+        htf_action = moving_average_crossover(candles, strategy, snapshot)
+        direction = higher_timeframe_direction(htf_action)
+        metadata = htf_action.metadata or {}
+        if direction == desired_action:
+            agreements += 1
+        elif direction in {"buy", "sell"} and direction != desired_action:
+            conflicts += 1
+        rows.append(
+            {
+                "granularity": granularity,
+                "direction": direction,
+                "action": htf_action.action,
+                "reason": htf_action.reason,
+                "long_score": metadata.get("long_score"),
+                "short_score": metadata.get("short_score"),
+                "regime_score": metadata.get("regime_score"),
+                "rsi": metadata.get("rsi"),
+                "fast_ma": metadata.get("fast_ma"),
+                "slow_ma": metadata.get("slow_ma"),
+            }
+        )
+    min_agreements = max(1, int(getattr(args, "higher_timeframe_min_agreements", 1) or 1))
+    allow_conflicts = bool(getattr(args, "allow_higher_timeframe_conflicts", False))
+    confirmed = agreements >= min_agreements and (allow_conflicts or conflicts == 0)
+    reason = "confirmed"
+    if agreements < min_agreements:
+        reason = "insufficient_higher_timeframe_agreement"
+    elif conflicts and not allow_conflicts:
+        reason = "higher_timeframe_conflict"
+    return {
+        "confirmed": confirmed,
+        "reason": reason,
+        "desired_action": desired_action,
+        "agreements": agreements,
+        "conflicts": conflicts,
+        "missing": missing,
+        "min_agreements": min_agreements,
+        "granularities": rows,
+    }
+
+
+def higher_timeframe_score_adjustment(confirmation: dict[str, object], args: argparse.Namespace) -> float:
+    agreements = max(0, int(confirmation.get("agreements", 0) or 0))
+    conflicts = max(0, int(confirmation.get("conflicts", 0) or 0))
+    agreement_bonus = max(0.0, float(getattr(args, "higher_timeframe_agreement_bonus", 0.35) or 0.0))
+    conflict_penalty = max(0.0, float(getattr(args, "higher_timeframe_conflict_penalty", 0.60) or 0.0))
+    max_bonus = max(0.0, float(getattr(args, "higher_timeframe_max_score_bonus", 0.75) or 0.0))
+    bonus = min(max_bonus, agreements * agreement_bonus)
+    penalty = conflicts * conflict_penalty
+    return bonus - penalty
+
+
+def higher_timeframe_direction(action: TradeAction) -> str:
+    action_name = str(action.action or "").lower()
+    if action_name in {"buy", "sell"}:
+        return action_name
+    metadata = action.metadata or {}
+    try:
+        fast_ma = float(metadata.get("fast_ma"))
+        slow_ma = float(metadata.get("slow_ma"))
+    except (TypeError, ValueError):
+        return "flat"
+    if fast_ma > slow_ma:
+        return "buy"
+    if fast_ma < slow_ma:
+        return "sell"
+    return "flat"
 
 
 def is_fx_pair(name: str) -> bool:

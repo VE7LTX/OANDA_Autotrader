@@ -12,6 +12,7 @@ from scripts.scan_forex_opportunities import (
     adaptive_spread_atr_limit,
     apply_live_spread_guard,
     apply_adaptive_quality,
+    apply_entry_timing_confirmation_to_candidates,
     apply_instrument_scorecard_to_candidates,
     build_decision_summary,
     build_instrument_scorecard,
@@ -20,9 +21,11 @@ from scripts.scan_forex_opportunities import (
     correlated_exposure_groups,
     describe_exception,
     entry_throttle_reason,
+    evaluate_entry_timing_confirmation,
     exposure_group,
     exposure_group_throttle_reason,
     fetch_candles_safe,
+    higher_timeframe_direction,
     is_fx_pair,
     is_major_fx_pair,
     instrument_price_precisions,
@@ -126,6 +129,167 @@ def test_rank_directional_watchlist_includes_hold_pressure() -> None:
     ranked = rank_directional_watchlist(candidates, "long_score")
 
     assert [item["instrument"] for item in ranked] == ["AUD_USD", "GBP_USD", "EUR_USD"]
+
+
+def test_higher_timeframe_direction_uses_action_or_ma_bias() -> None:
+    assert higher_timeframe_direction(TradeAction(action="buy", instrument="EUR_USD")) == "buy"
+    assert higher_timeframe_direction(
+        TradeAction(
+            action="hold",
+            instrument="EUR_USD",
+            metadata={"fast_ma": 1.2, "slow_ma": 1.1},
+        )
+    ) == "buy"
+    assert higher_timeframe_direction(
+        TradeAction(
+            action="hold",
+            instrument="EUR_USD",
+            metadata={"fast_ma": 1.0, "slow_ma": 1.1},
+        )
+    ) == "sell"
+
+
+def test_higher_timeframe_confirmation_blocks_conflict(monkeypatch) -> None:
+    class FakeInstruments:
+        def get_candles(self, *_args, **_kwargs):
+            return {"candles": [{"mid": {"c": "1.0"}}]}
+
+    monkeypatch.setattr(
+        scanner,
+        "moving_average_crossover",
+        lambda *_args, **_kwargs: TradeAction(
+            action="sell",
+            instrument="EUR_USD",
+            metadata={"fast_ma": 1.0, "slow_ma": 1.1, "long_score": 1.0, "short_score": 3.0},
+        ),
+    )
+    candidates = [{"instrument": "EUR_USD", "action": "buy", "score": 6.2, "required_score": 5.6, "metadata": {}}]
+
+    scanner.apply_higher_timeframe_confirmation_to_candidates(
+        candidates,
+        instruments_client=FakeInstruments(),
+        snapshot=SimpleNamespace(),
+        base_strategy=scanner.StrategyConfig(instrument="EUR_USD"),
+        price_precisions={},
+        args=SimpleNamespace(
+            disable_higher_timeframe_confirmation=False,
+            higher_timeframe_granularities="M15,H1",
+            higher_timeframe_count=120,
+            higher_timeframe_min_agreements=1,
+            allow_higher_timeframe_conflicts=False,
+        ),
+    )
+
+    assert candidates[0]["blocked_reason"] == "higher_timeframe_not_confirmed"
+    assert candidates[0]["higher_timeframe_confirmation"]["conflicts"] == 2
+
+
+def test_higher_timeframe_confirmation_boosts_aligned_candidate(monkeypatch) -> None:
+    class FakeInstruments:
+        def get_candles(self, *_args, **_kwargs):
+            return {"candles": [{"mid": {"c": "1.0"}}]}
+
+    monkeypatch.setattr(
+        scanner,
+        "moving_average_crossover",
+        lambda *_args, **_kwargs: TradeAction(
+            action="buy",
+            instrument="EUR_USD",
+            metadata={"fast_ma": 1.2, "slow_ma": 1.1, "long_score": 3.0, "short_score": 1.0},
+        ),
+    )
+    candidates = [{"instrument": "EUR_USD", "action": "buy", "score": 5.8, "required_score": 5.6, "metadata": {}}]
+
+    scanner.apply_higher_timeframe_confirmation_to_candidates(
+        candidates,
+        instruments_client=FakeInstruments(),
+        snapshot=SimpleNamespace(),
+        base_strategy=scanner.StrategyConfig(instrument="EUR_USD"),
+        price_precisions={},
+        args=SimpleNamespace(
+            disable_higher_timeframe_confirmation=False,
+            higher_timeframe_granularities="M15,H1",
+            higher_timeframe_count=120,
+            higher_timeframe_min_agreements=1,
+            allow_higher_timeframe_conflicts=False,
+            higher_timeframe_agreement_bonus=0.35,
+            higher_timeframe_conflict_penalty=0.60,
+            higher_timeframe_max_score_bonus=0.75,
+        ),
+    )
+
+    assert candidates[0].get("blocked_reason") is None
+    assert candidates[0]["higher_timeframe_confirmation"]["agreements"] == 2
+    assert candidates[0]["higher_timeframe_score_adjustment"] == 0.7
+    assert candidates[0]["score"] == 6.5
+
+
+def test_entry_timing_confirmation_blocks_buy_without_confirming_close() -> None:
+    args = SimpleNamespace(
+        entry_timing_max_extension_atr=1.35,
+        entry_timing_buy_max_rsi=72.0,
+        entry_timing_sell_min_rsi=28.0,
+    )
+    candles = [
+        {"mid": {"c": "1.1000"}},
+        {"mid": {"c": "1.1030"}},
+        {"mid": {"c": "1.1020"}},
+    ]
+
+    timing = evaluate_entry_timing_confirmation(
+        "buy",
+        candles,
+        {"fast_ma": 1.1015, "slow_ma": 1.1000, "rsi": 58.0},
+        0.0020,
+        args,
+    )
+
+    assert timing["confirmed"] is False
+    assert "no_confirming_up_close" in timing["details"]
+
+
+def test_entry_timing_gate_blocks_otherwise_eligible_candidate() -> None:
+    args = SimpleNamespace(disable_entry_timing_confirmation=False)
+    candidates = [
+        {
+            "instrument": "EUR_USD",
+            "action": "sell",
+            "score": 5.8,
+            "required_score": 5.4,
+            "entry_timing_confirmation": {
+                "confirmed": False,
+                "reason": "entry_timing_not_confirmed",
+                "details": ["no_confirming_down_close"],
+            },
+        }
+    ]
+
+    apply_entry_timing_confirmation_to_candidates(candidates, args)
+
+    assert candidates[0]["blocked_reason"] == "entry_timing_not_confirmed"
+
+
+def test_entry_timing_confirmation_allows_clean_sell_continuation() -> None:
+    args = SimpleNamespace(
+        entry_timing_max_extension_atr=1.35,
+        entry_timing_buy_max_rsi=72.0,
+        entry_timing_sell_min_rsi=28.0,
+    )
+    candles = [
+        {"mid": {"c": "1.1010"}},
+        {"mid": {"c": "1.1000"}},
+        {"mid": {"c": "1.0990"}},
+    ]
+
+    timing = evaluate_entry_timing_confirmation(
+        "sell",
+        candles,
+        {"fast_ma": 1.1000, "slow_ma": 1.1015, "rsi": 42.0},
+        0.0020,
+        args,
+    )
+
+    assert timing["confirmed"] is True
 
 
 def test_adaptive_quality_penalizes_bad_stats_but_recovers_with_atr() -> None:

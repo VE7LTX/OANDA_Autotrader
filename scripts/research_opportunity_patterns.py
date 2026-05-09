@@ -28,13 +28,16 @@ from oanda_autotrader.strategy import StrategyConfig, moving_average_crossover
 from scripts.scan_forex_opportunities import (
     apply_entry_timing_confirmation_to_candidates,
     apply_instrument_scorecard_to_candidates,
+    compact_external_signal,
     evaluate_entry_timing_confirmation,
+    external_signal_adjustment,
     higher_timeframe_direction,
     instrument_class,
     instrument_class_counts,
     instrument_metadata,
     instrument_trade_units,
     opportunity_score,
+    parse_signal_timestamp,
     required_submit_score,
     select_scan_instruments,
 )
@@ -82,6 +85,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--higher-timeframe-agreement-bonus", type=float, default=0.35)
     parser.add_argument("--higher-timeframe-conflict-penalty", type=float, default=0.60)
     parser.add_argument("--higher-timeframe-max-score-bonus", type=float, default=0.75)
+    parser.add_argument("--external-signals-path", default="")
+    parser.add_argument("--external-signal-max-age-minutes", type=float, default=240.0)
+    parser.add_argument("--external-signal-max-adjustment", type=float, default=0.75)
+    parser.add_argument("--require-external-signal-alignment", action="store_true")
     parser.add_argument("--disable-entry-timing-confirmation", action="store_true")
     parser.add_argument("--disable-higher-timeframe-confirmation", action="store_true")
     parser.add_argument("--max-hold-candles", type=int, default=36)
@@ -106,13 +113,15 @@ def main() -> None:
         print_cache_summary(dataset)
         return
 
+    external_signals = load_research_external_signals(args.external_signals_path)
     configs = list(iter_research_configs(args))
-    results = [evaluate_research_config(dataset, config, args) for config in configs]
+    results = [evaluate_research_config(dataset, config, args, external_signals) for config in configs]
     results.sort(key=lambda row: row["objective_score"], reverse=True)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "cache_path": args.cache_path,
         "dataset_summary": dataset_summary(dataset),
+        "external_signal_summary": research_external_signal_summary(external_signals),
         "candidate_count": len(results),
         "target_win_rate": args.target_win_rate,
         "top_results": results[: args.top],
@@ -190,12 +199,13 @@ def evaluate_research_config(
     dataset: dict[str, object],
     config: dict[str, object],
     args: argparse.Namespace,
+    external_signals: dict[str, list[dict[str, object]]] | None = None,
 ) -> dict[str, object]:
     all_trades: list[dict[str, object]] = []
     gate_counts: dict[str, int] = {}
     by_instrument: dict[str, dict[str, object]] = {}
     for instrument, row in (dataset.get("instruments") or {}).items():
-        result = replay_instrument(str(instrument), row, config, args)
+        result = replay_instrument(str(instrument), row, config, args, external_signals or {})
         all_trades.extend(result["trades"])
         merge_counts(gate_counts, result["gate_counts"])
         if result["summary"]["trade_count"]:
@@ -224,6 +234,7 @@ def replay_instrument(
     row: object,
     config: dict[str, object],
     args: argparse.Namespace,
+    external_signals: dict[str, list[dict[str, object]]] | None = None,
 ) -> dict[str, object]:
     payload = row if isinstance(row, dict) else {}
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
@@ -314,6 +325,18 @@ def replay_instrument(
         if action.action not in {"buy", "sell"}:
             increment(gate_counts, "hold")
             continue
+        signal_adjustment = apply_research_external_signals(
+            candidate,
+            external_signals or {},
+            candle_time=parse_ts(candle["time"]),
+            args=args,
+        )
+        if signal_adjustment is None and bool(getattr(args, "require_external_signal_alignment", False)):
+            increment(gate_counts, "external_signal_missing")
+            continue
+        if candidate.get("blocked_reason"):
+            increment(gate_counts, str(candidate["blocked_reason"]))
+            continue
         htf_confirmation = higher_timeframe_research_confirmation(
             instrument=instrument,
             action=str(action.action),
@@ -362,6 +385,121 @@ def replay_instrument(
         if final_close is not None:
             trades.append(close_research_trade(open_trade, candles[-1]["time"], final_close, "forced_end"))
     return {"trades": trades, "gate_counts": gate_counts, "summary": summarize_r_trades(trades)}
+
+
+def apply_research_external_signals(
+    candidate: dict[str, object],
+    signals_by_instrument: dict[str, list[dict[str, object]]],
+    *,
+    candle_time: datetime,
+    args: argparse.Namespace,
+) -> float | None:
+    instrument = str(candidate.get("instrument") or "").upper()
+    action = str(candidate.get("action") or "").lower()
+    if action not in {"buy", "sell"}:
+        return None
+    signals = active_research_external_signals(
+        signals_by_instrument.get(instrument) or [],
+        candle_time=candle_time,
+        max_age_minutes=float(getattr(args, "external_signal_max_age_minutes", 240.0) or 0.0),
+    )
+    if not signals:
+        return None
+    max_adjustment = max(0.0, float(getattr(args, "external_signal_max_adjustment", 0.75) or 0.0))
+    if max_adjustment <= 0:
+        return None
+    adjustment = 0.0
+    applied: list[dict[str, object]] = []
+    for signal in signals:
+        signal_adjustment = external_signal_adjustment(signal, action, max_adjustment)
+        if signal_adjustment == 0:
+            continue
+        adjustment += signal_adjustment
+        applied.append(compact_external_signal(signal, signal_adjustment))
+    adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
+    if not applied or adjustment == 0:
+        return None
+    candidate["pre_external_signal_score"] = candidate.get("score")
+    candidate["external_signal_score_adjustment"] = adjustment
+    candidate["external_signals"] = applied
+    candidate["score"] = max(0.0, float(candidate.get("score", 0.0) or 0.0) + adjustment)
+    metadata = dict(candidate.get("metadata") or {})
+    metadata["external_signal_score_adjustment"] = adjustment
+    metadata["external_signals"] = applied
+    candidate["metadata"] = metadata
+    if float(candidate["score"]) < float(candidate.get("required_score", 0.0) or 0.0):
+        candidate["blocked_reason"] = "external_signal_conflict"
+    return adjustment
+
+
+def active_research_external_signals(
+    signals: list[dict[str, object]],
+    *,
+    candle_time: datetime,
+    max_age_minutes: float,
+) -> list[dict[str, object]]:
+    active = []
+    for signal in signals:
+        timestamp = signal.get("_timestamp")
+        if not isinstance(timestamp, datetime):
+            continue
+        age_minutes = (candle_time - timestamp).total_seconds() / 60.0
+        if age_minutes < 0:
+            continue
+        if max_age_minutes > 0 and age_minutes > max_age_minutes:
+            continue
+        active.append(signal)
+    return active
+
+
+def load_research_external_signals(path_value: str) -> dict[str, list[dict[str, object]]]:
+    if not path_value:
+        return {}
+    path = Path(path_value)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    raw_signals = payload.get("signals") if isinstance(payload, dict) else payload
+    if not isinstance(raw_signals, list):
+        return {}
+    generated_at = payload.get("generated_at") if isinstance(payload, dict) else None
+    by_instrument: dict[str, list[dict[str, object]]] = {}
+    for raw in raw_signals:
+        if not isinstance(raw, dict):
+            continue
+        timestamp = parse_signal_timestamp(raw.get("timestamp") or raw.get("generated_at") or generated_at)
+        if timestamp is None:
+            continue
+        instruments = raw.get("instruments")
+        if isinstance(instruments, str):
+            names = [instruments]
+        elif isinstance(instruments, list):
+            names = [str(item) for item in instruments]
+        else:
+            names = [str(raw.get("instrument") or "")]
+        for name in names:
+            instrument = str(name or "").strip().upper()
+            if not instrument:
+                continue
+            signal = dict(raw)
+            signal["instrument"] = instrument
+            signal["_timestamp"] = timestamp
+            signal["timestamp"] = timestamp.isoformat()
+            by_instrument.setdefault(instrument, []).append(signal)
+    for rows in by_instrument.values():
+        rows.sort(key=lambda item: item["_timestamp"])
+    return by_instrument
+
+
+def research_external_signal_summary(signals_by_instrument: dict[str, list[dict[str, object]]]) -> dict[str, object]:
+    return {
+        "instrument_count": len(signals_by_instrument),
+        "signal_count": sum(len(items) for items in signals_by_instrument.values()),
+        "instruments": sorted(signals_by_instrument)[:25],
+    }
 
 
 def cached_research_action(
